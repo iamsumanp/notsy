@@ -1,4 +1,11 @@
-import SwiftUI
+import sys
+
+# 1. Update Theme colors to match the new darker, slicker blue UI
+path = "Sources/notebar/UI/Theme.swift"
+with open(path, "r") as f:
+    content = f.read()
+
+new_theme = """import SwiftUI
 
 struct Theme {
     static let bg = Color(red: 0.10, green: 0.10, blue: 0.11) // Very dark gray/black background
@@ -12,3 +19,6 @@ struct Theme {
     static let pinBg = Color.green.opacity(0.2)
     static let calloutBg = Color(red: 0.15, green: 0.18, blue: 0.28) // Deep blue for callouts
 }
+"""
+with open(path, "w") as f:
+    f.write(new_theme)

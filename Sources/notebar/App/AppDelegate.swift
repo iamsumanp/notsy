@@ -26,7 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupPanel() {
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
-            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -34,12 +34,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = true
         panel.backgroundColor = .clear
+        panel.hasShadow = true
 
         let contentView = MainPanel(onClose: { [weak self] in
             self?.hideWindow()
