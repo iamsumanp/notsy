@@ -18,17 +18,22 @@ class CustomTextView: NSTextView {
         if characterIndex < text.length {
             let lineRange = text.lineRange(for: NSRange(location: characterIndex, length: 0))
             let lineString = text.substring(with: lineRange)
+            let trimmed = lineString.trimmingCharacters(in: .whitespaces)
+            let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
             
-            // Check if the click happened near the beginning of the line (where the circle is)
-            if characterIndex - lineRange.location <= 2 {
-                if lineString.hasPrefix("○ ") {
+            // Check if click happened directly on the circle
+            let circleLocation = lineRange.location + leadingWhitespace.utf16.count
+            if characterIndex == circleLocation || characterIndex == circleLocation + 1 {
+                if trimmed.hasPrefix("○ ") {
                     self.undoManager?.beginUndoGrouping()
                     let greenDot = NSAttributedString(string: "◉", attributes: [
                         .font: NSFont.systemFont(ofSize: 15),
                         .foregroundColor: NSColor.systemGreen
                     ])
                     if let textStorage = self.textStorage {
-                        textStorage.replaceCharacters(in: NSRange(location: lineRange.location, length: 1), with: greenDot)
+                        textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: greenDot)
+                        // Make sure the space after it is white
+                        textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: textStorage.length - (circleLocation + 1)))
                         self.didChangeText()
                     }
                     self.undoManager?.endUndoGrouping()
@@ -36,14 +41,15 @@ class CustomTextView: NSTextView {
                         delegate.saveState()
                     }
                     return
-                } else if lineString.hasPrefix("◉ ") {
+                } else if trimmed.hasPrefix("◉ ") {
                     self.undoManager?.beginUndoGrouping()
                     let whiteCircle = NSAttributedString(string: "○", attributes: [
                         .font: NSFont.systemFont(ofSize: 15),
                         .foregroundColor: NSColor.white
                     ])
                     if let textStorage = self.textStorage {
-                        textStorage.replaceCharacters(in: NSRange(location: lineRange.location, length: 1), with: whiteCircle)
+                        textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: whiteCircle)
+                        textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: textStorage.length - (circleLocation + 1)))
                         self.didChangeText()
                     }
                     self.undoManager?.endUndoGrouping()
@@ -191,10 +197,8 @@ struct RichTextEditorView: NSViewRepresentable {
             let text = textView.string as NSString
             let selectedRange = textView.selectedRange()
             
-            // We need to find all paragraphs within the selected range
             var start = selectedRange.location
             let end = selectedRange.location + selectedRange.length
-            
             var lineRanges: [NSRange] = []
             
             while start <= end {
@@ -210,46 +214,41 @@ struct RichTextEditorView: NSViewRepresentable {
             let checkStr = "○ "
             let checkedStr = "◉ "
             
-            // Process backwards so insertion/deletion doesn't invalidate subsequent NSRanges
             for lineRange in lineRanges.reversed() {
                 let lineString = text.substring(with: lineRange)
+                let trimmed = lineString.trimmingCharacters(in: .whitespaces)
+                let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
                 
                 if isCheckbox {
-                    if lineString.hasPrefix(checkStr) {
-                        textView.insertText(checkedStr, replacementRange: NSRange(location: lineRange.location, length: checkStr.utf16.count))
-                    } else if lineString.hasPrefix(checkedStr) {
-                        textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: checkedStr.utf16.count))
-                    } else if lineString.hasPrefix(bulletStr) {
-                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location, length: bulletStr.utf16.count))
+                    if trimmed.hasPrefix(checkStr) {
+                        textView.insertText(checkedStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkStr.utf16.count))
+                        textView.textStorage?.addAttribute(.foregroundColor, value: NSColor.systemGreen, range: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 1))
+                    } else if trimmed.hasPrefix(checkedStr) {
+                        textView.insertText("", replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkedStr.utf16.count))
+                    } else if trimmed.hasPrefix(bulletStr) {
+                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bulletStr.utf16.count))
                     } else {
-                        // Skip empty lines unless it's the only line selected
-                        if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 {
-                            continue
-                        }
-                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location, length: 0))
+                        if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 { continue }
+                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 0))
                     }
                 } else {
-                    if lineString.hasPrefix(bulletStr) {
-                        textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: bulletStr.utf16.count))
-                    } else if lineString.hasPrefix(checkStr) {
-                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: checkStr.utf16.count))
-                    } else if lineString.hasPrefix(checkedStr) {
-                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: checkedStr.utf16.count))
+                    if trimmed.hasPrefix(bulletStr) {
+                        textView.insertText("", replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bulletStr.utf16.count))
+                    } else if trimmed.hasPrefix(checkStr) {
+                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkStr.utf16.count))
+                    } else if trimmed.hasPrefix(checkedStr) {
+                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkedStr.utf16.count))
                     } else {
-                        if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 {
-                            continue
-                        }
-                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: 0))
+                        if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 { continue }
+                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 0))
                     }
                 }
             }
             
-            textView.undoManager?.endUndoGrouping()
+            // Force reset typing attributes so typing continues as white
+            textView.typingAttributes[.foregroundColor] = NSColor.white
             
-            // Restore selection around the newly modified text block
-            if let first = lineRanges.first, let last = lineRanges.last {
-                // Since length changed, we can just collapse cursor to the end or recalculate bounds
-            }
+            textView.undoManager?.endUndoGrouping()
             saveState()
         }
 
