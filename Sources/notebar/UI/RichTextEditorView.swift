@@ -141,47 +141,66 @@ struct RichTextEditorView: NSViewRepresentable {
             guard let textView = self.textView else { return }
             let text = textView.string as NSString
             let selectedRange = textView.selectedRange()
-            let location = min(selectedRange.location, max(0, text.length))
-            let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
-            let lineString = text.substring(with: lineRange)
+            
+            // We need to find all paragraphs within the selected range
+            var start = selectedRange.location
+            let end = selectedRange.location + selectedRange.length
+            
+            var lineRanges: [NSRange] = []
+            
+            while start <= end {
+                let range = text.lineRange(for: NSRange(location: start, length: 0))
+                lineRanges.append(range)
+                start = range.location + range.length
+                if start >= text.length { break }
+            }
             
             textView.undoManager?.beginUndoGrouping()
             
             let bulletStr = "• "
-            let checkStr = "[ ] "
-            let checkedStr = "[x] "
+            let checkStr = "○ "
+            let checkedStr = "◉ "
             
-            // Toggle Logic
-            if isCheckbox {
-                if lineString.hasPrefix(checkStr) {
-                    // It is a checkbox, change to checked
-                    textView.insertText(checkedStr, replacementRange: NSRange(location: lineRange.location, length: 4))
-                } else if lineString.hasPrefix(checkedStr) {
-                    // It is checked, remove it
-                    textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: 4))
-                } else if lineString.hasPrefix(bulletStr) {
-                    // Convert bullet to checkbox
-                    textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location, length: 2))
+            // Process backwards so insertion/deletion doesn't invalidate subsequent NSRanges
+            for lineRange in lineRanges.reversed() {
+                let lineString = text.substring(with: lineRange)
+                
+                if isCheckbox {
+                    if lineString.hasPrefix(checkStr) {
+                        textView.insertText(checkedStr, replacementRange: NSRange(location: lineRange.location, length: checkStr.utf16.count))
+                    } else if lineString.hasPrefix(checkedStr) {
+                        textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: checkedStr.utf16.count))
+                    } else if lineString.hasPrefix(bulletStr) {
+                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location, length: bulletStr.utf16.count))
+                    } else {
+                        // Skip empty lines unless it's the only line selected
+                        if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 {
+                            continue
+                        }
+                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location, length: 0))
+                    }
                 } else {
-                    // Add checkbox
-                    textView.setSelectedRange(NSRange(location: lineRange.location, length: 0))
-                    textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location, length: 0))
-                }
-            } else {
-                if lineString.hasPrefix(bulletStr) {
-                    // It is a bullet, remove it
-                    textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: 2))
-                } else if lineString.hasPrefix(checkStr) || lineString.hasPrefix(checkedStr) {
-                    // Convert checkbox to bullet
-                    textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: 4))
-                } else {
-                    // Add bullet
-                    textView.setSelectedRange(NSRange(location: lineRange.location, length: 0))
-                    textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: 0))
+                    if lineString.hasPrefix(bulletStr) {
+                        textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: bulletStr.utf16.count))
+                    } else if lineString.hasPrefix(checkStr) {
+                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: checkStr.utf16.count))
+                    } else if lineString.hasPrefix(checkedStr) {
+                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: checkedStr.utf16.count))
+                    } else {
+                        if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 {
+                            continue
+                        }
+                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location, length: 0))
+                    }
                 }
             }
             
             textView.undoManager?.endUndoGrouping()
+            
+            // Restore selection around the newly modified text block
+            if let first = lineRanges.first, let last = lineRanges.last {
+                // Since length changed, we can just collapse cursor to the end or recalculate bounds
+            }
             saveState()
         }
 
@@ -227,7 +246,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
                 let lineString = text.substring(with: lineRange)
                 if lineString.hasPrefix("• ") { isBullet = true }
-                else if lineString.hasPrefix("[ ] ") || lineString.hasPrefix("[x] ") { isCheckbox = true }
+                else if lineString.hasPrefix("○ ") || lineString.hasPrefix("◉ ") { isCheckbox = true }
             }
             
             DispatchQueue.main.async {
@@ -281,8 +300,8 @@ struct RichTextEditorView: NSViewRepresentable {
             let lineString = text.substring(with: lineRange)
             
             let bulletStr = "• "
-            let checkStr = "[ ] "
-            let checkDoneStr = "[x] "
+            let checkStr = "○ "
+            let checkDoneStr = "◉ "
             
             var prefixToContinue = ""
             if lineString.hasPrefix(bulletStr) { prefixToContinue = bulletStr }
@@ -290,7 +309,7 @@ struct RichTextEditorView: NSViewRepresentable {
             
             if !prefixToContinue.isEmpty {
                 let trimmed = lineString.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed == "•" || trimmed == "[]" || trimmed == "[x]" || trimmed == "[ ]" {
+                if trimmed == "•" || trimmed == "○" || trimmed == "◉" {
                     // Empty list item -> Remove the list and exit out to a normal newline
                     textView.undoManager?.beginUndoGrouping()
                     let fullLineRange = text.lineRange(for: NSRange(location: selectedRange.location, length: 0))
