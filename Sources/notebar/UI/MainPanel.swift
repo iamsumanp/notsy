@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+struct EditorState: Equatable {
+    var isBold: Bool = false
+    var isItalic: Bool = false
+    var isUnderline: Bool = false
+    var isBullet: Bool = false
+    var isCheckbox: Bool = false
+}
+
 struct MainPanel: View {
     var onClose: () -> Void
     @Environment(NoteStore.self) private var store
@@ -98,17 +106,43 @@ struct MainPanel: View {
                             HStack(spacing: 6) {
                                 Image(systemName: "folder")
                                     .font(.system(size: 12))
-                                Text("Notes")
+                                Text("Notebar")
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 10))
-                                Text("Local")
+                                Text("~/Library/Application Support/Notebar")
+                                    .truncationMode(.middle)
+                                    .lineLimit(1)
                             }
                             .foregroundColor(Theme.textMuted)
                             .font(.system(size: 12, weight: .medium))
                             
                             Spacer()
                             
-                            HStack(spacing: 16) {
+                            HStack(spacing: 4) {
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "bold"]) }) { 
+                                    Text("B").font(.system(size: 12, weight: .bold)).frame(width: 20, height: 20).background(editorState.isBold ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                                }.buttonStyle(.plain)
+                                
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "italic"]) }) { 
+                                    Text("I").font(.system(size: 12, weight: .semibold).italic()).frame(width: 20, height: 20).background(editorState.isItalic ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                                }.buttonStyle(.plain)
+                                
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "underline"]) }) { 
+                                    Text("U").font(.system(size: 12, weight: .semibold)).underline().frame(width: 20, height: 20).background(editorState.isUnderline ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                                }.buttonStyle(.plain)
+                                
+                                Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
+                                
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "list"]) }) { 
+                                    Image(systemName: "list.bullet").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isBullet ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                                }.buttonStyle(.plain)
+                                
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "checkbox"]) }) { 
+                                    Image(systemName: "checkmark.square").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isCheckbox ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                                }.buttonStyle(.plain)
+
+                                Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
+
                                 Button(action: { 
                                     withAnimation(.spring()) {
                                         if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
@@ -117,13 +151,12 @@ struct MainPanel: View {
                                     }
                                 }) {
                                     Image(systemName: note.pinned ? "pin.fill" : "pin")
+                                        .font(.system(size: 12))
                                         .foregroundColor(note.pinned ? Theme.pinGold : Theme.textMuted)
+                                        .frame(width: 20, height: 20)
                                 }.buttonStyle(.plain)
-                                
-                                Button(action: { focus = .editor }) {
-                                    Image(systemName: "pencil")
-                                }.buttonStyle(.plain).foregroundColor(Theme.textMuted)
                             }
+                            .foregroundColor(Theme.textMuted)
                         }
                         .padding(.horizontal, 32)
                         .padding(.top, 24)
@@ -165,11 +198,6 @@ struct MainPanel: View {
                             Text("Created \(metaTimeString(from: note.createdAt))")
                             Text("•")
                             Text("\(note.plainTextCache.split(separator: " ").count) words")
-                            Text("•")
-                            HStack(spacing: 4) {
-                                Circle().fill(Theme.pinGold).frame(width: 8, height: 8)
-                                Text("Active")
-                            }
                         }
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(Theme.textMuted)
@@ -198,7 +226,6 @@ struct MainPanel: View {
             HStack {
                 HStack(spacing: 16) {
                     ShortcutBadge(key: "↵", label: "Open")
-                    ShortcutBadge(key: "⌘ ↵", label: "Open in Split")
                     ShortcutBadge(key: "Tab", label: "Actions")
                 }
                 
@@ -214,6 +241,7 @@ struct MainPanel: View {
         }
         .frame(width: 950, height: 650)
         .background(Theme.sidebarBg)
+        .edgesIgnoringSafeArea(.all)
         .preferredColorScheme(.dark)
         .onReceive(newNotePub) { _ in createNewNote(fromQuery: false) }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotebarOpened"))) { _ in
@@ -297,6 +325,151 @@ struct MainPanel: View {
     }
 }
 
+struct SidebarView: View {
+    @Binding var queryBuffer: String
+    @Binding var selectedNoteID: UUID?
+    var filteredNotes: [Note]
+    @FocusState var focus: MainPanel.FocusField?
+    var createNewNote: () -> Void
+    @Environment(NoteStore.self) private var store
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        
+                        let pinned = filteredNotes.filter { $0.pinned }
+                        let recent = filteredNotes.filter { !$0.pinned }
+                        
+                        let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
+                        
+                        if !queryBuffer.isEmpty && !filteredNotes.isEmpty {
+                            Text("TOP HIT")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(Theme.textMuted)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                                .padding(.bottom, 4)
+                            
+                            if let firstNote = filteredNotes.first {
+                                NoteRowView(note: firstNote, isSelected: selectedNoteID == firstNote.id)
+                                    .id("top-\(firstNote.id)")
+                                    .onTapGesture {
+                                        selectedNoteID = firstNote.id
+                                        focus = .editor
+                                    }
+                            }
+                        }
+
+                        let displayPinned = pinned.filter { $0.id != topHitID }
+                        let displayRecent = recent.filter { $0.id != topHitID }
+
+                        if !displayPinned.isEmpty {
+                            Text("PINNED")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(Theme.textMuted)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                                .padding(.bottom, 4)
+                            
+                            ForEach(displayPinned) { note in
+                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
+                                    .id("pinned-\(note.id)")
+                                    .onTapGesture {
+                                        selectedNoteID = note.id
+                                        focus = .editor
+                                    }
+                                    .contextMenu {
+                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                                            Text("Unpin")
+                                            Image(systemName: "pin.slash")
+                                        }
+                                        Button(action: {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+                                        Divider()
+                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
+                                    }
+                            }
+                        }
+
+                        if !displayRecent.isEmpty {
+                            Text("NOTES")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(Theme.textMuted)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 16)
+                                .padding(.bottom, 4)
+                            
+                            ForEach(displayRecent) { note in
+                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
+                                    .id("recent-\(note.id)")
+                                    .onTapGesture {
+                                        selectedNoteID = note.id
+                                        focus = .editor
+                                    }
+                                    .contextMenu {
+                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                                            Text("Pin")
+                                            Image(systemName: "pin")
+                                        }
+                                        Button(action: {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+                                        Divider()
+                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
+                                    }
+                            }
+                        }
+
+                        Text("ACTIONS")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(Theme.textMuted)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 24)
+                            .padding(.bottom, 4)
+                        
+                        Button(action: createNewNote) {
+                            HStack(spacing: 12) {
+                                ZRectangleIcon(icon: "plus", isSelected: false)
+                                Text(queryBuffer.isEmpty ? "Create New Note" : "Create \"\(queryBuffer)\"")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(Theme.text)
+                                Spacer()
+                                Text("Cmd+N")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Theme.textMuted)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.clear)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 4)
+                    }
+                    .padding(.bottom, 16)
+                }
+                .focused($focus, equals: .list)
+            }
+        }
+    }
+}
+
+struct RichTextEditorWrapper: View {
+    let note: Note
+    let store: NoteStore
+    @Binding var editorState: EditorState
+    @FocusState var isFocused: MainPanel.FocusField?
+
+    var body: some View {
+        RichTextEditorView(note: note, store: store, editorState: $editorState).focused($isFocused, equals: .editor)
+    }
+}
+
 struct ShortcutBadge: View {
     let key: String
     let label: String
@@ -351,6 +524,7 @@ struct NoteRowView: View {
                     Text("•")
                     if note.pinned {
                         Image(systemName: "pin.fill").font(.system(size: 8)).foregroundColor(Theme.pinGold)
+                        Text("•")
                     }
                     Text(preview(for: note.plainTextCache))
                         .lineLimit(1)
@@ -385,160 +559,5 @@ struct NoteRowView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d"
         return formatter.string(from: date)
-    }
-}
-
-struct EditorState: Equatable {
-    var isBold: Bool = false
-    var isItalic: Bool = false
-    var isUnderline: Bool = false
-    var isBullet: Bool = false
-    var isCheckbox: Bool = false
-}
-
-struct RichTextEditorWrapper: View {
-    let note: Note
-    let store: NoteStore
-    @Binding var editorState: EditorState
-    @FocusState var isFocused: MainPanel.FocusField?
-
-    var body: some View {
-        RichTextEditorView(note: note, store: store, editorState: $editorState).focused($isFocused, equals: .editor)
-    }
-}
-
-struct SidebarView: View {
-    @Binding var queryBuffer: String
-    @Binding var selectedNoteID: UUID?
-    var filteredNotes: [Note]
-    @FocusState var focus: MainPanel.FocusField?
-    var createNewNote: () -> Void
-    @Environment(NoteStore.self) private var store
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        
-                        if !queryBuffer.isEmpty && !filteredNotes.isEmpty {
-                            Text("TOP HIT")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(Theme.textMuted)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
-                            
-                            if let firstNote = filteredNotes.first {
-                                NoteRowView(note: firstNote, isSelected: selectedNoteID == firstNote.id)
-                                    .id(firstNote.id)
-                                    .onTapGesture {
-                                        selectedNoteID = firstNote.id
-                                        focus = .editor
-                                    }
-                            }
-                        }
-
-                        
-                        let pinned = filteredNotes.filter { $0.pinned }
-                        let recent = filteredNotes.filter { !$0.pinned }
-                        
-                        // When searching, we might extract the top hit
-                        let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
-                        
-                        let displayPinned = pinned.filter { $0.id != topHitID }
-                        let displayRecent = recent.filter { $0.id != topHitID }
-
-                        if !displayPinned.isEmpty {
-                            Text("PINNED")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(Theme.textMuted)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
-                            
-                            ForEach(displayPinned) { note in
-                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
-                                    .id(note.id)
-                                    .onTapGesture {
-                                        selectedNoteID = note.id
-                                        focus = .editor
-                                    }
-                                    .contextMenu {
-                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
-                                            Text("Unpin")
-                                            Image(systemName: "pin.slash")
-                                        }
-                                        Button(action: {
-                                            NSPasteboard.general.clearContents()
-                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
-                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
-                                        Divider()
-                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
-                                    }
-                            }
-                        }
-
-                        if !displayRecent.isEmpty {
-                            Text("NOTES")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(Theme.textMuted)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 16)
-                                .padding(.bottom, 4)
-                            
-                            ForEach(displayRecent) { note in
-                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
-                                    .id(note.id)
-                                    .onTapGesture {
-                                        selectedNoteID = note.id
-                                        focus = .editor
-                                    }
-                                    .contextMenu {
-                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
-                                            Text("Pin")
-                                            Image(systemName: "pin")
-                                        }
-                                        Button(action: {
-                                            NSPasteboard.general.clearContents()
-                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
-                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
-                                        Divider()
-                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
-                                    }
-                            }
-                        }
-
-                        Text("ACTIONS")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(Theme.textMuted)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 24)
-                            .padding(.bottom, 4)
-                        
-                        Button(action: createNewNote) {
-                            HStack(spacing: 12) {
-                                ZRectangleIcon(icon: "plus", isSelected: false)
-                                Text(queryBuffer.isEmpty ? "Create New Note" : "Create \"\(queryBuffer)\"")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(Theme.text)
-                                Spacer()
-                                Text("Cmd+N")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(Theme.textMuted)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.clear)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 4)
-                    }
-                    .padding(.bottom, 16)
-                }
-                .focused($focus, equals: .list)
-            }
-        }
     }
 }
