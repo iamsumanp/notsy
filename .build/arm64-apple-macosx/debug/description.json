@@ -1,0 +1,359 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.notebar-arm64-apple-macosx16.0-debug.module" : {
+      "executable" : "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "fileList" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources",
+      "importPath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/AppDelegate.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/notebarApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Extensions/GlobalHotkeyManager.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Note.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Store.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/MainPanel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/RichTextEditorView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/Theme.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "notebar",
+      "moduleOutputPath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules/notebar.swiftmodule",
+      "objects" : [
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-enable-batch-mode",
+        "-index-store-path",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-module-cache-path",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "notebar_main",
+        "-color-diagnostics",
+        "-swift-version",
+        "5",
+        "-F",
+        "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-sdk",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "notebar"
+      ],
+      "outputFileMapPath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules/notebar.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/AppDelegate.swift",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/notebarApp.swift",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Extensions/GlobalHotkeyManager.swift",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Note.swift",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Store.swift",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/MainPanel.swift",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/RichTextEditorView.swift",
+        "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/Theme.swift"
+      ],
+      "tempsPath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "notebar" : [
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "-module-name",
+      "notebar",
+      "-package-name",
+      "notebar",
+      "-incremental",
+      "-c",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/AppDelegate.swift",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/notebarApp.swift",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Extensions/GlobalHotkeyManager.swift",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Note.swift",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Store.swift",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/MainPanel.swift",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/RichTextEditorView.swift",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/Theme.swift",
+      "-I",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-enable-batch-mode",
+      "-index-store-path",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-module-cache-path",
+      "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "notebar_main",
+      "-color-diagnostics",
+      "-swift-version",
+      "5",
+      "-F",
+      "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+      "-sdk",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "notebar",
+      "-driver-use-frontend-path",
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "notebar" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "enableAllTraits" : false
+  },
+  "writeCommands" : {
+    "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar-entitlement.plist"
+    },
+    "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/AppDelegate.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/notebarApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Extensions/GlobalHotkeyManager.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Note.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Store.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/MainPanel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/RichTextEditorView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/Theme.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources"
+    },
+    "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.product/Objects.LinkFileList"
+    },
+    "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+    }
+  }
+}

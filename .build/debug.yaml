@@ -1,0 +1,81 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<notebar-arm64-apple-macosx16.0-debug.exe>","<notebar-arm64-apple-macosx16.0-debug.module>"]
+  "notebar-arm64-apple-macosx16.0-debug.exe": ["<notebar-arm64-apple-macosx16.0-debug.exe>"]
+  "notebar-arm64-apple-macosx16.0-debug.module": ["<notebar-arm64-apple-macosx16.0-debug.module>"]
+  "test": ["<notebar-arm64-apple-macosx16.0-debug.exe>","<notebar-arm64-apple-macosx16.0-debug.module>"]
+default: "main"
+nodes:
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar":
+    is-mutated: true
+commands:
+  "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar-entitlement.plist":
+    tool: write-auxiliary-file
+    inputs: ["<entitlement-plist>","<com.apple.security.get-task-allow>"]
+    outputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar-entitlement.plist"]
+    description: "Write auxiliary file /Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar-entitlement.plist"
+
+  "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/AppDelegate.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/notebarApp.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Extensions/GlobalHotkeyManager.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Note.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Store.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/MainPanel.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/RichTextEditorView.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/Theme.swift"]
+    outputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources"]
+    description: "Write auxiliary file /Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources"
+
+  "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o"]
+    outputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.product/Objects.LinkFileList"
+
+  "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<notebar-arm64-apple-macosx16.0-debug.exe>":
+    tool: phony
+    inputs: ["<notebar-arm64-apple-macosx16.0-debug.exe-CodeSigning>"]
+    outputs: ["<notebar-arm64-apple-macosx16.0-debug.exe>"]
+
+  "<notebar-arm64-apple-macosx16.0-debug.module>":
+    tool: phony
+    inputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules/notebar.swiftmodule"]
+    outputs: ["<notebar-arm64-apple-macosx16.0-debug.module>"]
+
+  "C.notebar-arm64-apple-macosx16.0-debug.exe":
+    tool: shell
+    inputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.product/Objects.LinkFileList"]
+    outputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/notebar"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-L","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug","-o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar","-module-name","notebar","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-alias","-Xlinker","_notebar_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.product/Objects.LinkFileList","-target","arm64-apple-macosx14.0","-Xlinker","-add_ast_path","-Xlinker","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules/notebar.swiftmodule","-F","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xlinker","-rpath","-Xlinker","/Library/Developer/CommandLineTools/Library/Developer/Frameworks"]
+
+  "C.notebar-arm64-apple-macosx16.0-debug.exe-entitlements":
+    tool: shell
+    inputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar-entitlement.plist"]
+    outputs: ["<notebar-arm64-apple-macosx16.0-debug.exe-CodeSigning>"]
+    description: "Applying debug entitlements to ./.build/arm64-apple-macosx/debug/notebar"
+    args: ["codesign","--force","--sign","-","--entitlements","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar-entitlement.plist","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar"]
+
+  "C.notebar-arm64-apple-macosx16.0-debug.module":
+    tool: shell
+    inputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/AppDelegate.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/notebarApp.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Extensions/GlobalHotkeyManager.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Note.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Store.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/MainPanel.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/RichTextEditorView.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/Theme.swift","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/swift-version--1AB21518FC5DEDBE.txt","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources"]
+    outputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules/notebar.swiftmodule"]
+    description: "Compiling Swift Module 'notebar' (8 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","notebar","-emit-dependencies","-emit-module","-emit-module-path","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules/notebar.swiftmodule","-output-file-map","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/output-file-map.json","-incremental","-c","@/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/sources","-I","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-enable-batch-mode","-index-store-path","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j8","-DSWIFT_PACKAGE","-DDEBUG","-module-cache-path","/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","notebar_main","-color-diagnostics","-swift-version","5","-F","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","notebar"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/","/Users/boski/Desktop/desk/productive-tools/notebar/Package.swift","/Users/boski/Desktop/desk/productive-tools/notebar/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

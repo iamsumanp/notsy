@@ -1,0 +1,53 @@
+{
+  "": {
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/master.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/AppDelegate.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/AppDelegate.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/App/notebarApp.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/notebarApp.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Extensions/GlobalHotkeyManager.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/GlobalHotkeyManager.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Note.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Note.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/Models/Store.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Store.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/MainPanel.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/MainPanel.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/RichTextEditorView.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/RichTextEditorView.swiftdeps"
+  },
+  "/Users/boski/Desktop/desk/productive-tools/notebar/Sources/notebar/UI/Theme.swift": {
+    "dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.d",
+    "object": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swift.o",
+    "swiftmodule": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme~partial.swiftmodule",
+    "swift-dependencies": "/Users/boski/Desktop/desk/productive-tools/notebar/.build/arm64-apple-macosx/debug/notebar.build/Theme.swiftdeps"
+  }
+}
