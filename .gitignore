@@ -1,6 +1,9 @@
-.DS_Store
-.build/
-build/
-*.xcodeproj
-*.xcworkspace
-*.dmg
+# Exclude everything by default
+*
+# But re-include these specific files and folders
+!Sources/
+!Sources/notsy/
+!Sources/notsy/**
+!Package.swift
+!.gitignore
+!README.md
