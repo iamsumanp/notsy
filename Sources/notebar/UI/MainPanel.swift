@@ -439,44 +439,74 @@ struct SidebarView: View {
                             }
                         }
 
-                        Text("NOTES")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(Theme.textMuted)
-                            .padding(.horizontal, 16)
-                            .padding(.top, queryBuffer.isEmpty ? 12 : 16)
-                            .padding(.bottom, 4)
                         
-                        let remainingNotes = queryBuffer.isEmpty ? filteredNotes : Array(filteredNotes.dropFirst())
+                        let pinned = filteredNotes.filter { $0.pinned }
+                        let recent = filteredNotes.filter { !$0.pinned }
                         
-                        ForEach(remainingNotes) { note in
-                            NoteRowView(note: note, isSelected: selectedNoteID == note.id)
-                                .id(note.id)
-                                .onTapGesture {
-                                    selectedNoteID = note.id
-                                    focus = .editor
-                                }
-                                .contextMenu {
-                                    Button(action: {
-                                        let pasteboard = NSPasteboard.general
-                                        pasteboard.clearContents()
-                                        pasteboard.setString(note.plainTextCache, forType: .string)
-                                    }) {
-                                        Text("Copy Content")
-                                        Image(systemName: "doc.on.doc")
+                        // When searching, we might extract the top hit
+                        let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
+                        
+                        let displayPinned = pinned.filter { $0.id != topHitID }
+                        let displayRecent = recent.filter { $0.id != topHitID }
+
+                        if !displayPinned.isEmpty {
+                            Text("PINNED")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(Theme.textMuted)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                                .padding(.bottom, 4)
+                            
+                            ForEach(displayPinned) { note in
+                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
+                                    .id(note.id)
+                                    .onTapGesture {
+                                        selectedNoteID = note.id
+                                        focus = .editor
                                     }
-                                    Divider()
-                                    Button(role: .destructive, action: {
-                                        withAnimation {
-                                            store.delete(note)
-                                            if selectedNoteID == note.id {
-                                                selectedNoteID = store.notes.first?.id
-                                            }
+                                    .contextMenu {
+                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                                            Text("Unpin")
+                                            Image(systemName: "pin.slash")
                                         }
-                                    }) {
-                                        Text("Delete")
-                                        Image(systemName: "trash")
+                                        Button(action: {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+                                        Divider()
+                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
                                     }
-                                }
+                            }
+                        }
+
+                        if !displayRecent.isEmpty {
+                            Text("NOTES")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(Theme.textMuted)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 16)
+                                .padding(.bottom, 4)
+                            
+                            ForEach(displayRecent) { note in
+                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
+                                    .id(note.id)
+                                    .onTapGesture {
+                                        selectedNoteID = note.id
+                                        focus = .editor
+                                    }
+                                    .contextMenu {
+                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                                            Text("Pin")
+                                            Image(systemName: "pin")
+                                        }
+                                        Button(action: {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+                                        Divider()
+                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
+                                    }
+                            }
                         }
 
                         Text("ACTIONS")
