@@ -32,14 +32,15 @@ class CustomTextView: NSTextView {
                     ])
                     if let textStorage = self.textStorage {
                         textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: greenDot)
-                        // Make sure the space after it is white
-                        textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: textStorage.length - (circleLocation + 1)))
+                        // Force the space immediately after the dot to be white so typing inherits white
+                        if circleLocation + 1 < textStorage.length {
+                            textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: 1))
+                        }
                         self.didChangeText()
                     }
                     self.undoManager?.endUndoGrouping()
-                    if let delegate = self.delegate as? RichTextEditorView.Coordinator {
-                        delegate.saveState()
-                    }
+                    self.typingAttributes[.foregroundColor] = NSColor.white
+                    if let delegate = self.delegate as? RichTextEditorView.Coordinator { delegate.saveState() }
                     return
                 } else if trimmed.hasPrefix("◉ ") {
                     self.undoManager?.beginUndoGrouping()
@@ -49,13 +50,14 @@ class CustomTextView: NSTextView {
                     ])
                     if let textStorage = self.textStorage {
                         textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: whiteCircle)
-                        textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: textStorage.length - (circleLocation + 1)))
+                        if circleLocation + 1 < textStorage.length {
+                            textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: 1))
+                        }
                         self.didChangeText()
                     }
                     self.undoManager?.endUndoGrouping()
-                    if let delegate = self.delegate as? RichTextEditorView.Coordinator {
-                        delegate.saveState()
-                    }
+                    self.typingAttributes[.foregroundColor] = NSColor.white
+                    if let delegate = self.delegate as? RichTextEditorView.Coordinator { delegate.saveState() }
                     return
                 }
             }
@@ -264,8 +266,12 @@ struct RichTextEditorView: NSViewRepresentable {
         }
         
         func updateFormattingState(for textView: NSTextView) {
-            var attrs: [NSAttributedString.Key: Any]
+            // Aggressively prevent green text inheritance when moving cursor
+            if let fgColor = textView.typingAttributes[.foregroundColor] as? NSColor, fgColor == NSColor.systemGreen {
+                textView.typingAttributes[.foregroundColor] = NSColor.white
+            }
             
+            var attrs: [NSAttributedString.Key: Any]
             if textView.selectedRange().length > 0 {
                 attrs = textView.textStorage?.attributes(at: textView.selectedRange().location, effectiveRange: nil) ?? [:]
             } else {
