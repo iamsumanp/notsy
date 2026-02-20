@@ -24,8 +24,8 @@ struct MainPanel: View {
     }
     @FocusState private var focus: FocusField?
 
-    let newNotePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotebarNewNote"))
-    let focusSearchPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotebarFocusSearch"))
+    let newNotePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyNewNote"))
+    let focusSearchPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyFocusSearch"))
 
     var filteredNotes: [Note] {
         if queryBuffer.isEmpty { return store.notes }
@@ -106,10 +106,10 @@ struct MainPanel: View {
                             HStack(spacing: 6) {
                                 Image(systemName: "folder")
                                     .font(.system(size: 12))
-                                Text("Notebar")
+                                Text("Notsy")
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 10))
-                                Text("~/Library/Application Support/Notebar")
+                                Text("~/Library/Application Support/Notsy")
                                     .truncationMode(.middle)
                                     .lineLimit(1)
                             }
@@ -119,25 +119,25 @@ struct MainPanel: View {
                             Spacer()
                             
                             HStack(spacing: 4) {
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "bold"]) }) { 
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "bold"]) }) { 
                                     Text("B").font(.system(size: 12, weight: .bold)).frame(width: 20, height: 20).background(editorState.isBold ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
                                 }.buttonStyle(.plain)
                                 
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "italic"]) }) { 
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "italic"]) }) { 
                                     Text("I").font(.system(size: 12, weight: .semibold).italic()).frame(width: 20, height: 20).background(editorState.isItalic ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
                                 }.buttonStyle(.plain)
                                 
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "underline"]) }) { 
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "underline"]) }) { 
                                     Text("U").font(.system(size: 12, weight: .semibold)).underline().frame(width: 20, height: 20).background(editorState.isUnderline ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
                                 }.buttonStyle(.plain)
                                 
                                 Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
                                 
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "list"]) }) { 
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "list"]) }) { 
                                     Image(systemName: "list.bullet").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isBullet ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
                                 }.buttonStyle(.plain)
                                 
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotebarToolbarAction"), object: nil, userInfo: ["action": "checkbox"]) }) { 
+                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "checkbox"]) }) { 
                                     Image(systemName: "checkmark.square").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isCheckbox ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
                                 }.buttonStyle(.plain)
 
@@ -244,7 +244,7 @@ struct MainPanel: View {
         .edgesIgnoringSafeArea(.all)
         .preferredColorScheme(.dark)
         .onReceive(newNotePub) { _ in createNewNote(fromQuery: false) }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotebarOpened"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpened"))) { _ in
             store.sortNotes()
             queryBuffer = ""
             if let first = store.notes.first {

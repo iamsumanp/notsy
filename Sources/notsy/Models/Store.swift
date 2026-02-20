@@ -9,7 +9,7 @@ final class NoteStore {
 
     init() {
         let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        let appSupport = paths[0].appendingPathComponent("Notebar")
+        let appSupport = paths[0].appendingPathComponent("Notsy")
         if !FileManager.default.fileExists(atPath: appSupport.path) {
             try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true, attributes: nil)
         }

@@ -61,7 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let button = statusItem.button {
             button.image = NSImage(
-                systemSymbolName: "note.text", accessibilityDescription: "Notebar")
+                systemSymbolName: "note.text", accessibilityDescription: "Notsy")
             button.action = #selector(statusBarButtonClicked(sender:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
@@ -84,7 +84,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(settingsAction), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit Notebar", action: #selector(quitAction), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit Notsy", action: #selector(quitAction), keyEquivalent: "q"))
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
@@ -100,10 +100,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showWindow() {
-        panel.center()
+        if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) {
+            let x = screen.frame.origin.x + (screen.frame.width - panel.frame.width) / 2
+            let y = screen.frame.origin.y + (screen.frame.height - panel.frame.height) / 2
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        } else {
+            panel.center()
+        }
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        NotificationCenter.default.post(name: NSNotification.Name("NotebarOpened"), object: nil)
+        NotificationCenter.default.post(name: NSNotification.Name("NotsyOpened"), object: nil)
     }
 
     func hideWindow() {
@@ -112,12 +118,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func newNoteAction() {
         showWindow()
-        NotificationCenter.default.post(name: NSNotification.Name("NotebarNewNote"), object: nil)
+        NotificationCenter.default.post(name: NSNotification.Name("NotsyNewNote"), object: nil)
     }
 
     @objc private func searchAction() {
         showWindow()
-        NotificationCenter.default.post(name: NSNotification.Name("NotebarFocusSearch"), object: nil)
+        NotificationCenter.default.post(name: NSNotification.Name("NotsyFocusSearch"), object: nil)
     }
 
     @objc private func settingsAction() {}

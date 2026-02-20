@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct notebarApp: App {
+struct NotsyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {

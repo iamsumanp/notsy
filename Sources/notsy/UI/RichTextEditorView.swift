@@ -9,6 +9,41 @@ class EditorScrollView: NSScrollView {
     }
 }
 
+class CustomTextView: NSTextView {
+    override func mouseDown(with event: NSEvent) {
+        let point = self.convert(event.locationInWindow, from: nil)
+        let characterIndex = self.characterIndexForInsertion(at: point)
+        
+        let text = self.string as NSString
+        if characterIndex < text.length {
+            let lineRange = text.lineRange(for: NSRange(location: characterIndex, length: 0))
+            let lineString = text.substring(with: lineRange)
+            
+            // Check if the click happened near the beginning of the line (where the circle is)
+            if characterIndex - lineRange.location <= 2 {
+                if lineString.hasPrefix("○ ") {
+                    self.undoManager?.beginUndoGrouping()
+                    self.insertText("◉", replacementRange: NSRange(location: lineRange.location, length: 1))
+                    self.undoManager?.endUndoGrouping()
+                    if let delegate = self.delegate as? RichTextEditorView.Coordinator {
+                        delegate.saveState()
+                    }
+                    return
+                } else if lineString.hasPrefix("◉ ") {
+                    self.undoManager?.beginUndoGrouping()
+                    self.insertText("○", replacementRange: NSRange(location: lineRange.location, length: 1))
+                    self.undoManager?.endUndoGrouping()
+                    if let delegate = self.delegate as? RichTextEditorView.Coordinator {
+                        delegate.saveState()
+                    }
+                    return
+                }
+            }
+        }
+        super.mouseDown(with: event)
+    }
+}
+
 struct RichTextEditorView: NSViewRepresentable {
     var note: Note
     var store: NoteStore
@@ -17,7 +52,7 @@ struct RichTextEditorView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> EditorScrollView {
-        let textView = NSTextView(usingTextLayoutManager: false) 
+        let textView = CustomTextView(usingTextLayoutManager: false) 
         textView.autoresizingMask = [.width, .height]
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -86,7 +121,7 @@ struct RichTextEditorView: NSViewRepresentable {
         init(_ parent: RichTextEditorView) { 
             self.parent = parent 
             super.init()
-            NotificationCenter.default.addObserver(self, selector: #selector(handleToolbarAction(_:)), name: NSNotification.Name("NotebarToolbarAction"), object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleToolbarAction(_:)), name: NSNotification.Name("NotsyToolbarAction"), object: nil)
         }
         
         deinit {

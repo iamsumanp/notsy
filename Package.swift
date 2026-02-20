@@ -2,18 +2,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "notebar",
+    name: "notsy",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "notebar", targets: ["notebar"])
+        .executable(name: "notsy", targets: ["notsy"])
     ],
     targets: [
         .executableTarget(
-            name: "notebar",
+            name: "notsy",
             dependencies: [],
-            path: "Sources/notebar"
+            path: "Sources/notsy"
         )
     ]
 )
