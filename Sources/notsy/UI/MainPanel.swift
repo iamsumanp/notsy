@@ -444,7 +444,34 @@ struct SidebarView: View {
                                     .foregroundColor(Theme.textMuted)
                             }
                             .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.clear)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 4)
+                        
+                        Button(action: {
+                            withAnimation {
+                                // Delete all unpinned
+                                let toDelete = store.notes.filter { !$0.pinned }
+                                for note in toDelete {
+                                    store.delete(note)
+                                }
+                                if let selected = selectedNoteID, !store.notes.contains(where: { $0.id == selected }) {
+                                    selectedNoteID = store.notes.first?.id
+                                }
+                            }
+                        }) {
+                            HStack(spacing: 12) {
+                                ZRectangleIcon(icon: "trash", isSelected: false)
+                                Text("Clear Unpinned Notes")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(Theme.text)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
                             .background(Color.clear)
                             .contentShape(Rectangle())
                         }

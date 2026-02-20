@@ -23,7 +23,14 @@ class CustomTextView: NSTextView {
             if characterIndex - lineRange.location <= 2 {
                 if lineString.hasPrefix("○ ") {
                     self.undoManager?.beginUndoGrouping()
-                    self.insertText("◉", replacementRange: NSRange(location: lineRange.location, length: 1))
+                    let greenDot = NSAttributedString(string: "◉", attributes: [
+                        .font: NSFont.systemFont(ofSize: 15),
+                        .foregroundColor: NSColor.systemGreen
+                    ])
+                    if let textStorage = self.textStorage {
+                        textStorage.replaceCharacters(in: NSRange(location: lineRange.location, length: 1), with: greenDot)
+                        self.didChangeText()
+                    }
                     self.undoManager?.endUndoGrouping()
                     if let delegate = self.delegate as? RichTextEditorView.Coordinator {
                         delegate.saveState()
@@ -31,7 +38,14 @@ class CustomTextView: NSTextView {
                     return
                 } else if lineString.hasPrefix("◉ ") {
                     self.undoManager?.beginUndoGrouping()
-                    self.insertText("○", replacementRange: NSRange(location: lineRange.location, length: 1))
+                    let whiteCircle = NSAttributedString(string: "○", attributes: [
+                        .font: NSFont.systemFont(ofSize: 15),
+                        .foregroundColor: NSColor.white
+                    ])
+                    if let textStorage = self.textStorage {
+                        textStorage.replaceCharacters(in: NSRange(location: lineRange.location, length: 1), with: whiteCircle)
+                        self.didChangeText()
+                    }
                     self.undoManager?.endUndoGrouping()
                     if let delegate = self.delegate as? RichTextEditorView.Coordinator {
                         delegate.saveState()
@@ -334,29 +348,55 @@ struct RichTextEditorView: NSViewRepresentable {
             let lineRange = text.lineRange(for: NSRange(location: max(0, selectedRange.location - 1), length: 0))
             let lineString = text.substring(with: lineRange)
             
-            let bulletStr = "• "
-            let checkStr = "○ "
-            let checkDoneStr = "◉ "
+            // Extract any leading whitespace (tabs or spaces) for sub-bullets
+            var leadingWhitespace = ""
+            for char in lineString {
+                if char == " " || char == "\t" {
+                    leadingWhitespace.append(char)
+                } else {
+                    break
+                }
+            }
+            
+            let trimmedLine = lineString.trimmingCharacters(in: .whitespaces)
             
             var prefixToContinue = ""
-            if lineString.hasPrefix(bulletStr) { prefixToContinue = bulletStr }
-            else if lineString.hasPrefix(checkStr) || lineString.hasPrefix(checkDoneStr) { prefixToContinue = checkStr }
+            if trimmedLine.hasPrefix("• ") { prefixToContinue = "• " }
+            else if trimmedLine.hasPrefix("○ ") || trimmedLine.hasPrefix("◉ ") { prefixToContinue = "○ " }
             
             if !prefixToContinue.isEmpty {
-                let trimmed = lineString.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed == "•" || trimmed == "○" || trimmed == "◉" {
-                    // Empty list item -> Remove the list and exit out to a normal newline
+                let textAfterPrefix = trimmedLine.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                if textAfterPrefix.isEmpty {
+                    // Empty list item -> Remove the list and outdent or exit
                     textView.undoManager?.beginUndoGrouping()
-                    let fullLineRange = text.lineRange(for: NSRange(location: selectedRange.location, length: 0))
-                    textView.insertText("", replacementRange: fullLineRange)
-                    textView.insertText("\n", replacementRange: textView.selectedRange())
+                    
+                    if !leadingWhitespace.isEmpty {
+                        // If it's a sub-bullet, just outdent it by removing the last tab/space
+                        let newWhitespace = String(leadingWhitespace.dropLast())
+                        textView.insertText("", replacementRange: lineRange)
+                        textView.insertText(newWhitespace + prefixToContinue, replacementRange: NSRange(location: lineRange.location, length: 0))
+                    } else {
+                        // If it's a root bullet, remove it entirely and go to new line
+                        let fullLineRange = text.lineRange(for: NSRange(location: selectedRange.location, length: 0))
+                        textView.insertText("", replacementRange: fullLineRange)
+                        textView.insertText("\n", replacementRange: textView.selectedRange())
+                    }
+                    
                     textView.undoManager?.endUndoGrouping()
                     saveState()
                     return true
                 } else {
-                    // Continue the list automatically on the next line
+                    // Continue the list automatically on the next line, preserving indent
                     textView.undoManager?.beginUndoGrouping()
-                    textView.insertText("\n" + prefixToContinue, replacementRange: textView.selectedRange())
+                    textView.insertText("\n" + leadingWhitespace + prefixToContinue, replacementRange: textView.selectedRange())
+                    
+                    // If it's a green checked dot we need to make sure the newly inserted one is white
+                    let newCursor = textView.selectedRange()
+                    if prefixToContinue == "○ " {
+                        textView.textStorage?.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: newCursor.location - 2, length: 1))
+                    }
+                    
                     textView.undoManager?.endUndoGrouping()
                     saveState()
                     return true
