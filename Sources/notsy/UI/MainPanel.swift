@@ -72,7 +72,7 @@ struct MainPanel: View {
             .background(Theme.sidebarBg)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Theme.selection, lineWidth: 1)
+                    .stroke(focus == .search ? Theme.selection : Theme.border, lineWidth: 1)
             )
             .padding(16)
             .background(Theme.sidebarBg)
@@ -274,18 +274,34 @@ struct MainPanel: View {
             queryBuffer = ""
             if let first = store.notes.first {
                 selectedNoteID = first.id
+                // Delay slightly to let the view render before stealing focus into the NSViewRepresentable
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    focus = .editor
+                }
+            } else {
+                focus = .search
             }
-            focus = .search
         }
         .onReceive(focusSearchPub) { _ in focus = .search }
         .onAppear {
-            focus = .search
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in handleKeyDown(event) }
-            if selectedNoteID == nil, let first = store.notes.first { selectedNoteID = first.id }
+            if selectedNoteID == nil, let first = store.notes.first { 
+                selectedNoteID = first.id 
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    focus = .editor
+                }
+            } else {
+                focus = .search
+            }
         }
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Cmd + , (Preferences)
+        if event.modifierFlags.contains(.command) && event.keyCode == 43 {
+            NotificationCenter.default.post(name: NSNotification.Name("NotsyShowPreferences"), object: nil)
+            return nil
+        }
         if event.modifierFlags.contains(.command) && event.keyCode == 45 {
             createNewNote(fromQuery: false)
             return nil

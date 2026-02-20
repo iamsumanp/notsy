@@ -8,6 +8,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     static var shared: AppDelegate!
 
+    var prefsWindow: NSWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
 
@@ -19,6 +21,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.toggleWindow()
             }
         }
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsAction), name: NSNotification.Name("NotsyShowPreferences"), object: nil)
 
         NSApp.setActivationPolicy(.accessory)
     }
@@ -126,7 +130,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.post(name: NSNotification.Name("NotsyFocusSearch"), object: nil)
     }
 
-    @objc private func settingsAction() {}
+    @objc private func settingsAction() {
+        if prefsWindow == nil {
+            let prefsView = PreferencesView()
+                .environment(store)
+            
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Notsy Preferences"
+            window.center()
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: prefsView)
+            self.prefsWindow = window
+        }
+        
+        prefsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     @objc private func quitAction() {
         NSApp.terminate(nil)
