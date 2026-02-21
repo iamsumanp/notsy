@@ -20,6 +20,33 @@ Notsy is a lightning-fast, keyboard-first, native macOS notes application design
 
 ---
 
+## 🖼️ Screenshots
+
+### Notsy
+![Notsy Main UI](docs/images/notsy-main.png)
+
+### Sync with Notion
+![Notion Sync Settings](docs/images/sync-with-notion-settings.png)
+![Notion Sync in Editor](docs/images/sync-with-notion-editor.png)
+
+### Image Viewer
+![Image Viewer](docs/images/image-viewer.png)
+
+### Drag/Pin Items + Rich Text Editor
+Notsy supports drag-and-drop between pinned and unpinned sections, with automatic pin state updates on drop.
+
+Rich text editor highlights:
+- Bold, italic, underline, strikethrough
+- Font style controls (sans/serif/mono)
+- Smart bullets and interactive checkboxes
+- Inline links and image support
+- Text color controls and formatting toolbar
+
+### Different Themes
+![Different Theme](docs/images/different-themes-light.png)
+
+---
+
 ## 🚀 Installation
 
 ### Download
@@ -50,6 +77,20 @@ The default shortcut to open Notsy is: **`Shift + Command + Space`**
 ### Preferences
 - Press **`Cmd + ,`** while the window is open to access Settings.
 - Quickly manage your data (Clear all unpinned notes, or wipe the database entirely).
+
+### Notion Setup
+To enable Notion sync in Notsy, you need a **Notion integration token** and a **database ID**.
+
+1. Go to **https://www.notion.so/my-integrations**.
+2. Click **New integration**.
+3. Give it a name (for example, `Notsy`), select your workspace, and create it.
+4. Open the integration and copy the **Internal Integration Secret** (this is your token).
+5. In Notion, open the database you want to sync.
+6. Click **••• (top-right) → Connections** (or **Add connections**) and connect the integration you created, so it has access to that database.
+7. Copy the database ID from the database URL:
+   - Example URL: `https://www.notion.so/<workspace>/<name>-0123456789abcdef0123456789abcdef?v=...`
+   - Database ID: `0123456789abcdef0123456789abcdef`
+8. In Notsy, open **Preferences** and paste the token and database ID into the Notion sync settings.
 
 ---
 
