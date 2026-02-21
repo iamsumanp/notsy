@@ -34,16 +34,88 @@ class CustomTextView: NSTextView {
     }
 
     private func applyPaste(text: String) {
+        let selection = selectedRange()
         let attrs = normalizedTypingAttributes()
         let insertion = NSAttributedString(string: text, attributes: attrs)
-        textStorage?.replaceCharacters(in: selectedRange(), with: insertion)
-        let cursor = selectedRange().location + insertion.length
+        textStorage?.replaceCharacters(in: selection, with: insertion)
+        let cursor = selection.location + insertion.length
         setSelectedRange(NSRange(location: cursor, length: 0))
         typingAttributes = attrs
         didChangeText()
     }
 
+    private func applyPaste(attributed attributedText: NSAttributedString) {
+        let selection = selectedRange()
+        let normalized = normalizePastedAttributedText(attributedText)
+        textStorage?.replaceCharacters(in: selection, with: normalized)
+        let cursor = selection.location + normalized.length
+        setSelectedRange(NSRange(location: cursor, length: 0))
+        typingAttributes = normalizedTypingAttributes()
+        didChangeText()
+    }
+
+    private func normalizePastedAttributedText(_ value: NSAttributedString) -> NSAttributedString {
+        let mutable = NSMutableAttributedString(attributedString: value)
+        let fullRange = NSRange(location: 0, length: mutable.length)
+        guard fullRange.length > 0 else { return mutable }
+
+        mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
+            var normalized = attrs
+
+            if attrs[.attachment] == nil {
+                let sourceFont = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: Self.editorFontSize)
+                normalized[.font] = monospacedFontPreservingTraits(from: sourceFont)
+                normalized[.foregroundColor] = NSColor.white
+            }
+
+            let paragraph = ((attrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle)
+                ?? NSMutableParagraphStyle()
+            paragraph.lineSpacing = 4
+            normalized[.paragraphStyle] = paragraph
+
+            mutable.setAttributes(normalized, range: range)
+        }
+
+        return mutable
+    }
+
+    private func monospacedFontPreservingTraits(from font: NSFont) -> NSFont {
+        var result = NSFont.monospacedSystemFont(ofSize: max(1, font.pointSize), weight: .regular)
+        let traits = font.fontDescriptor.symbolicTraits
+
+        if traits.contains(.bold),
+           let converted = NSFontManager.shared.convert(result, toHaveTrait: .boldFontMask) as NSFont? {
+            result = converted
+        }
+        if traits.contains(.italic),
+           let converted = NSFontManager.shared.convert(result, toHaveTrait: .italicFontMask) as NSFont? {
+            result = converted
+        }
+        return result
+    }
+
+    func resetTypingAttributesForCurrentSelection() {
+        guard let textStorage else {
+            typingAttributes = normalizedTypingAttributes()
+            return
+        }
+
+        guard textStorage.length > 0 else {
+            typingAttributes = normalizedTypingAttributes()
+            return
+        }
+
+        let cursor = max(0, min(selectedRange().location, textStorage.length - 1))
+        let attrs = textStorage.attributes(at: cursor, effectiveRange: nil)
+        typingAttributes = normalizedTypingAttributes(base: attrs)
+    }
+
     override func paste(_ sender: Any?) {
+        if let attributed = NSPasteboard.general.readObjects(forClasses: [NSAttributedString.self], options: nil)?.first as? NSAttributedString,
+           attributed.length > 0 {
+            applyPaste(attributed: attributed)
+            return
+        }
         guard let pasted = NSPasteboard.general.string(forType: .string), !pasted.isEmpty else {
             super.paste(sender)
             return
@@ -393,6 +465,7 @@ struct RichTextEditorView: NSViewRepresentable {
         textView.textStorage?.setAttributedString(note.stringRepresentation)
         textView.refreshDetectedLinks()
         textView.normalizeImageAttachmentsIfNeeded()
+        textView.resetTypingAttributesForCurrentSelection()
         context.coordinator.currentNoteID = note.id
 
         return scrollView
@@ -416,6 +489,9 @@ struct RichTextEditorView: NSViewRepresentable {
 
             let length = textView.textStorage?.length ?? 0
             textView.setSelectedRange(NSRange(location: length, length: 0))
+            if let customTextView = textView as? CustomTextView {
+                customTextView.resetTypingAttributesForCurrentSelection()
+            }
 
             context.coordinator.updateFormattingState(for: textView)
             context.coordinator.isUpdating = false
@@ -427,11 +503,15 @@ struct RichTextEditorView: NSViewRepresentable {
         var currentNoteID: UUID?
         var isUpdating = false
         weak var textView: NSTextView?
+        private var findQuery: String = ""
+        private var findMatches: [NSRange] = []
+        private var currentFindIndex: Int = -1
 
         init(_ parent: RichTextEditorView) { 
             self.parent = parent 
             super.init()
             NotificationCenter.default.addObserver(self, selector: #selector(handleToolbarAction(_:)), name: NSNotification.Name("NotsyToolbarAction"), object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleEditorFindAction(_:)), name: NSNotification.Name("NotsyEditorFindAction"), object: nil)
         }
         
         deinit {
@@ -493,6 +573,91 @@ struct RichTextEditorView: NSViewRepresentable {
                     applyTextColor(color)
                 }
             }
+        }
+
+        @objc func handleEditorFindAction(_ notification: Notification) {
+            guard let action = notification.userInfo?["action"] as? String else { return }
+            switch action {
+            case "update":
+                let query = (notification.userInfo?["query"] as? String) ?? ""
+                updateFindQuery(query)
+            case "next":
+                findNext()
+            case "prev":
+                findPrevious()
+            case "close":
+                clearFindHighlights()
+                findQuery = ""
+                findMatches = []
+                currentFindIndex = -1
+            default:
+                break
+            }
+        }
+
+        private func updateFindQuery(_ query: String) {
+            guard let textView = self.textView else { return }
+            findQuery = query
+            clearFindHighlights()
+            findMatches = []
+            currentFindIndex = -1
+
+            guard !query.isEmpty else { return }
+
+            let nsText = textView.string as NSString
+            var searchRange = NSRange(location: 0, length: nsText.length)
+            while searchRange.location < nsText.length {
+                let found = nsText.range(of: query, options: [.caseInsensitive, .diacriticInsensitive], range: searchRange)
+                if found.location == NSNotFound || found.length == 0 { break }
+                findMatches.append(found)
+                let nextLocation = found.location + found.length
+                searchRange = NSRange(location: nextLocation, length: max(0, nsText.length - nextLocation))
+            }
+
+            applyFindHighlights()
+            if !findMatches.isEmpty {
+                currentFindIndex = 0
+                revealCurrentFindMatch()
+            }
+        }
+
+        private func findNext() {
+            guard !findMatches.isEmpty else { return }
+            currentFindIndex = (currentFindIndex + 1) % findMatches.count
+            revealCurrentFindMatch()
+        }
+
+        private func findPrevious() {
+            guard !findMatches.isEmpty else { return }
+            currentFindIndex = (currentFindIndex - 1 + findMatches.count) % findMatches.count
+            revealCurrentFindMatch()
+        }
+
+        private func applyFindHighlights() {
+            guard let textView = self.textView,
+                  let layoutManager = textView.layoutManager else { return }
+            for range in findMatches {
+                layoutManager.addTemporaryAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.18), forCharacterRange: range)
+            }
+        }
+
+        private func revealCurrentFindMatch() {
+            guard let textView = self.textView,
+                  let layoutManager = textView.layoutManager,
+                  currentFindIndex >= 0,
+                  currentFindIndex < findMatches.count else { return }
+
+            applyFindHighlights()
+            let range = findMatches[currentFindIndex]
+            layoutManager.addTemporaryAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.35), forCharacterRange: range)
+            textView.scrollRangeToVisible(range)
+        }
+
+        private func clearFindHighlights() {
+            guard let textView = self.textView,
+                  let layoutManager = textView.layoutManager else { return }
+            let full = NSRange(location: 0, length: (textView.string as NSString).length)
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
         }
 
         private func applyTextColor(_ color: NSColor) {
@@ -633,6 +798,9 @@ struct RichTextEditorView: NSViewRepresentable {
                 textView.typingAttributes[.foregroundColor] = NSColor.white
             }
             parent.note.update(with: textView.attributedString())
+            if !findQuery.isEmpty {
+                updateFindQuery(findQuery)
+            }
             var didAutoUpdateTitle = false
             if parent.note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let firstLine = parent.note.plainTextCache

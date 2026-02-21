@@ -26,22 +26,28 @@ struct MainPanel: View {
     @State private var showColorPalette = false
     @State private var activeEditorColor = NSColor.white
     @State private var previewImage: NSImage?
+    @State private var showEditorFind = false
+    @State private var editorFindQuery = ""
     @AppStorage("notsy.sidebar.width") private var sidebarWidth: Double = 300
     @AppStorage("notsy.sidebar.collapsed") private var sidebarCollapsed: Bool = false
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var sidebarRuntimeWidth: CGFloat = 300
+    @State private var sidebarResizeHovering = false
+    @State private var sidebarContentPreviewCache: [UUID: String] = [:]
 
     enum FocusField: Hashable {
         case search
         case list
         case editor
         case title
+        case find
     }
     @FocusState private var focus: FocusField?
 
     let newNotePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyNewNote"))
     let focusSearchPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyFocusSearch"))
     let previewImagePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyPreviewImage"))
+    private let editorFindActionNotification = NSNotification.Name("NotsyEditorFindAction")
 
     var filteredNotes: [Note] {
         if queryBuffer.isEmpty { return store.notes }
@@ -51,20 +57,27 @@ struct MainPanel: View {
         }
     }
 
+    private var isSearchCompact: Bool {
+        focus == .editor || focus == .title || focus == .find
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // TOP BIG SEARCH BAR
             HStack {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 18))
+                    .font(.system(size: isSearchCompact ? 14 : 18))
                     .foregroundColor(Theme.textMuted)
                 
                 TextField("Search or command...", text: $queryBuffer)
-                    .font(.system(size: 18))
+                    .font(.system(size: isSearchCompact ? 14 : 18))
                     .textFieldStyle(.plain)
                     .foregroundColor(Theme.text)
                     .focused($focus, equals: .search)
                     .onChange(of: queryBuffer) { oldVal, newVal in
+                        if focus == .search, sidebarCollapsed {
+                            withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
+                        }
                         if !newVal.isEmpty, let first = filteredNotes.first {
                             if selectedNoteID != first.id {
                                 selectedNoteID = first.id
@@ -83,8 +96,8 @@ struct MainPanel: View {
                     .foregroundColor(Theme.textMuted)
                     .cornerRadius(4)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 16)
+            .padding(.horizontal, isSearchCompact ? 12 : 16)
+            .padding(.vertical, isSearchCompact ? 10 : 16)
             .background(Theme.sidebarBg)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -92,33 +105,20 @@ struct MainPanel: View {
             )
             .padding(16)
             .background(Theme.sidebarBg)
+            .animation(.easeInOut(duration: 0.15), value: isSearchCompact)
 
             Divider().background(Theme.border)
             
             // MAIN CONTENT
             HStack(spacing: 0) {
                 // LEFT PANEL (SIDEBAR)
-                if sidebarCollapsed {
-                    VStack {
-                        Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false } }) {
-                            Image(systemName: "sidebar.right")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(Theme.textMuted)
-                                .frame(width: 24, height: 24)
-                        }
-                        .buttonStyle(PointerPlainButtonStyle())
-                        .padding(.top, 10)
-                        Spacer()
-                    }
-                    .frame(width: 28)
-                    .background(Theme.sidebarBg)
-                    Divider().background(Theme.border)
-                } else {
+                if !sidebarCollapsed {
                     ZStack(alignment: .topTrailing) {
                         SidebarView(
                             queryBuffer: $queryBuffer,
                             selectedNoteID: $selectedNoteID,
                             filteredNotes: filteredNotes,
+                            contentPreviewCache: sidebarContentPreviewCache,
                             focus: _focus,
                             createNewNote: { createNewNote(fromQuery: true) }
                         )
@@ -141,49 +141,33 @@ struct MainPanel: View {
                         .fill(Theme.border)
                         .frame(width: 1)
                         .overlay {
-                            ZStack {
-                                // Visible grab indicator so users discover resizing.
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Theme.elementBg.opacity(0.85))
-                                    .frame(width: 10, height: 44)
-                                    .overlay {
-                                        VStack(spacing: 4) {
-                                            Capsule().fill(Theme.textMuted.opacity(0.9)).frame(width: 4, height: 4)
-                                            Capsule().fill(Theme.textMuted.opacity(0.9)).frame(width: 4, height: 4)
-                                            Capsule().fill(Theme.textMuted.opacity(0.9)).frame(width: 4, height: 4)
-                                        }
-                                    }
-                                    .padding(.vertical, 120)
-
-                                Color.clear
-                                    .frame(width: 10)
-                                    .contentShape(Rectangle())
-                                    .gesture(
-                                        DragGesture(minimumDistance: 0)
-                                            .onChanged { value in
-                                                if sidebarDragStartWidth == nil {
-                                                    sidebarDragStartWidth = clampedSidebarWidth
-                                                }
-                                                let base = sidebarDragStartWidth ?? clampedSidebarWidth
-                                                let proposed = base + value.translation.width
-                                                sidebarRuntimeWidth = max(200, min(460, proposed))
+                            Color.clear
+                                .frame(width: 12)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture(minimumDistance: 0)
+                                        .onChanged { value in
+                                            if sidebarDragStartWidth == nil {
+                                                sidebarDragStartWidth = clampedSidebarWidth
                                             }
-                                            .onEnded { _ in
-                                                sidebarWidth = Double(clampedSidebarWidth)
-                                                sidebarDragStartWidth = nil
-                                            }
-                                    )
-                                    .onHover { hovering in
-                                        if hovering {
-                                            NSCursor.resizeLeftRight.set()
+                                            let base = sidebarDragStartWidth ?? clampedSidebarWidth
+                                            let proposed = base + value.translation.width
+                                            sidebarRuntimeWidth = max(200, min(460, proposed))
                                         }
+                                        .onEnded { _ in
+                                            sidebarWidth = Double(clampedSidebarWidth)
+                                            sidebarDragStartWidth = nil
+                                        }
+                                )
+                                .onHover { isHovering in
+                                    if isHovering {
+                                        NSCursor.resizeLeftRight.push()
+                                        sidebarResizeHovering = true
+                                    } else if sidebarResizeHovering {
+                                        NSCursor.pop()
+                                        sidebarResizeHovering = false
                                     }
-                            }
-                            .onHover { hovering in
-                                if hovering {
-                                    NSCursor.resizeLeftRight.set()
                                 }
-                            }
                         }
                 }
 
@@ -195,43 +179,81 @@ struct MainPanel: View {
                         let note = store.notes[noteIndex]
                         
                         // Title/meta + formatting controls (top section)
-                        VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
                             titleEditor(for: note, selectedNoteID: selectedNoteID)
-
-                            HStack(spacing: 12) {
-                                Text("Created \(metaTimeString(from: note.createdAt))")
-                                Text("•")
-                                Text("\(note.plainTextCache.split(separator: " ").count) words")
-                            }
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(Theme.textMuted)
 
                             formattingToolbar()
                         }
                         .zIndex(showColorPalette ? 50 : 1)
                         .overlay(alignment: .topTrailing) {
-                            Button(action: {
-                                withAnimation(.spring()) {
-                                    if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
-                                        store.togglePin(for: store.notes[idx])
+                            VStack(alignment: .trailing, spacing: 8) {
+                                Button(action: {
+                                    withAnimation(.spring()) {
+                                        if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
+                                            store.togglePin(for: store.notes[idx])
+                                        }
                                     }
+                                }) {
+                                    Image(systemName: note.pinned ? "pin.fill" : "pin")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(note.pinned ? Theme.pinGold : Theme.textMuted)
+                                        .frame(width: 24, height: 24)
                                 }
-                            }) {
-                                Image(systemName: note.pinned ? "pin.fill" : "pin")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(note.pinned ? Theme.pinGold : Theme.textMuted)
-                                    .frame(width: 24, height: 24)
+                                .buttonStyle(.plain)
+
+                                if showEditorFind {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "magnifyingglass")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.textMuted)
+                                        TextField("Find in note", text: $editorFindQuery)
+                                            .font(.system(size: 12))
+                                            .textFieldStyle(.plain)
+                                            .foregroundColor(Theme.text)
+                                            .focused($focus, equals: .find)
+                                            .onChange(of: editorFindQuery) { _, newValue in
+                                                postEditorFindAction("update", query: newValue)
+                                            }
+                                        Button(action: { postEditorFindAction("prev") }) {
+                                            Image(systemName: "chevron.up")
+                                                .font(.system(size: 10, weight: .semibold))
+                                        }
+                                        .buttonStyle(PointerPlainButtonStyle())
+                                        Button(action: { postEditorFindAction("next") }) {
+                                            Image(systemName: "chevron.down")
+                                                .font(.system(size: 10, weight: .semibold))
+                                        }
+                                        .buttonStyle(PointerPlainButtonStyle())
+                                        Button(action: {
+                                            showEditorFind = false
+                                            editorFindQuery = ""
+                                            postEditorFindAction("close")
+                                            focus = .editor
+                                        }) {
+                                            Image(systemName: "xmark")
+                                                .font(.system(size: 10, weight: .semibold))
+                                        }
+                                        .buttonStyle(PointerPlainButtonStyle())
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .frame(width: 260)
+                                    .background(Theme.sidebarBg)
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+                                    .cornerRadius(8)
+                                }
                             }
-                            .buttonStyle(.plain)
                             .offset(x: 18, y: 0)
                         }
-                        .padding(.horizontal, 32)
-                        .padding(.top, 24)
-                        .padding(.bottom, 14)
+                        .padding(.leading, sidebarCollapsed ? 48 : 22)
+                        .padding(.trailing, 22)
+                        .padding(.top, 20)
+                        .padding(.bottom, 12)
                         
                         RichTextEditorWrapper(note: note, store: store, editorState: $editorState, isFocused: _focus)
-                            .padding(.horizontal, 24)
-                            .padding(.bottom, 16)
+                            .padding(.leading, sidebarCollapsed ? 40 : 18)
+                            .padding(.trailing, 18)
+                            .padding(.bottom, 14)
                             .zIndex(0)
                     } else {
                         VStack(spacing: 16) {
@@ -243,6 +265,19 @@ struct MainPanel: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.bg)
+                .overlay(alignment: .topLeading) {
+                    if sidebarCollapsed {
+                        Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false } }) {
+                            Image(systemName: "sidebar.right")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(Theme.textMuted)
+                                .frame(width: 28, height: 32)
+                        }
+                        .buttonStyle(PointerPlainButtonStyle())
+                        .padding(.top, 20)
+                        .padding(.leading, 10)
+                    }
+                }
             }
             
             Divider().background(Theme.border)
@@ -289,10 +324,21 @@ struct MainPanel: View {
                 .padding(.leading, 8)
                 
                 Spacer()
-                
+
                 Text("\(filteredNotes.count) results found")
                     .font(.system(size: 12))
                     .foregroundColor(Theme.textMuted)
+
+                if let selectedNoteID,
+                   let note = store.notes.first(where: { $0.id == selectedNoteID }) {
+                    Divider()
+                        .frame(height: 12)
+                        .background(Theme.border)
+                        .padding(.horizontal, 10)
+                    Text("Created \(metaTimeString(from: note.createdAt)) • \(note.plainTextCache.split(separator: " ").count) words")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(Theme.textMuted)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -340,6 +386,7 @@ struct MainPanel: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpened"))) { _ in
             store.sortNotes()
             queryBuffer = ""
+            refreshSidebarPreviewCache()
             if let first = store.notes.first {
                 selectedNoteID = first.id
                 // Delay slightly to let the view render before stealing focus into the NSViewRepresentable
@@ -351,8 +398,26 @@ struct MainPanel: View {
             }
         }
         .onReceive(focusSearchPub) { _ in focus = .search }
+        .onChange(of: focus) { _, newFocus in
+            if newFocus == .search, sidebarCollapsed {
+                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
+            }
+            // Global search should be transient: when search loses focus, restore full list.
+            if newFocus != .search && !queryBuffer.isEmpty {
+                queryBuffer = ""
+            }
+        }
+        .onChange(of: selectedNoteID) { _, _ in
+            refreshSidebarPreviewCache()
+            if showEditorFind {
+                showEditorFind = false
+                editorFindQuery = ""
+                postEditorFindAction("close")
+            }
+        }
         .onAppear {
             sidebarRuntimeWidth = CGFloat(sidebarWidth)
+            refreshSidebarPreviewCache()
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in handleKeyDown(event) }
             if selectedNoteID == nil, let first = store.notes.first { 
                 selectedNoteID = first.id 
@@ -366,8 +431,51 @@ struct MainPanel: View {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Up/Down in global search should navigate matched notes.
+        if (focus == .search || focus == .list),
+           !filteredNotes.isEmpty,
+           !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.option),
+           !event.modifierFlags.contains(.control),
+           (event.keyCode == 125 || event.keyCode == 126) {
+            moveSearchSelection(delta: event.keyCode == 125 ? 1 : -1)
+            return nil
+        }
         if event.keyCode == 53, previewImage != nil {
             previewImage = nil
+            return nil
+        }
+        if event.keyCode == 53, showEditorFind {
+            showEditorFind = false
+            editorFindQuery = ""
+            postEditorFindAction("close")
+            focus = .editor
+            return nil
+        }
+        // Cmd + Shift + F -> Global search
+        if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 3 {
+            if sidebarCollapsed {
+                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
+            }
+            focus = .search
+            return nil
+        }
+        // Cmd + / -> toggle sidebar
+        if event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.shift),
+           !event.modifierFlags.contains(.option),
+           !event.modifierFlags.contains(.control),
+           event.charactersIgnoringModifiers == "/" {
+            withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed.toggle() }
+            return nil
+        }
+        // Cmd + F -> Find inside editor
+        if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) && event.keyCode == 3 {
+            showEditorFind = true
+            DispatchQueue.main.async {
+                focus = .find
+                postEditorFindAction("update", query: editorFindQuery)
+            }
             return nil
         }
         // Cmd + , (Preferences)
@@ -379,7 +487,7 @@ struct MainPanel: View {
             createNewNote(fromQuery: false)
             return nil
         }
-        if event.modifierFlags.contains(.command) && (event.keyCode == 3 || event.keyCode == 37) {
+        if event.modifierFlags.contains(.command) && event.keyCode == 37 {
             focus = .search
             return nil
         }
@@ -394,12 +502,12 @@ struct MainPanel: View {
                 return nil
             }
         }
-        if focus != .editor && focus != .title && focus != .search {
+        if focus != .editor && focus != .title && focus != .search && focus != .find {
             if let chars = event.characters, chars.rangeOfCharacter(from: .alphanumerics) != nil {
                 focus = .search
             }
         }
-        if event.keyCode == 51 && (focus == .list || focus == .search) {
+        if event.keyCode == 51 && focus == .list {
             if let id = selectedNoteID, let note = store.notes.first(where: { $0.id == id }) {
                 store.delete(note)
                 self.selectedNoteID = filteredNotes.first(where: { $0.id != id })?.id
@@ -407,6 +515,19 @@ struct MainPanel: View {
             }
         }
         return event
+    }
+
+    private func moveSearchSelection(delta: Int) {
+        guard !filteredNotes.isEmpty else { return }
+
+        if let selectedNoteID,
+           let currentIndex = filteredNotes.firstIndex(where: { $0.id == selectedNoteID }) {
+            let nextIndex = max(0, min(filteredNotes.count - 1, currentIndex + delta))
+            self.selectedNoteID = filteredNotes[nextIndex].id
+            return
+        }
+
+        self.selectedNoteID = filteredNotes[delta >= 0 ? 0 : filteredNotes.count - 1].id
     }
 
     private func handleSearchSubmit() {
@@ -460,24 +581,42 @@ struct MainPanel: View {
         )
     }
 
+    private func postEditorFindAction(_ action: String, query: String? = nil) {
+        var payload: [String: Any] = ["action": action]
+        if let query { payload["query"] = query }
+        NotificationCenter.default.post(
+            name: editorFindActionNotification,
+            object: nil,
+            userInfo: payload
+        )
+    }
+
     private func capitalizeFirstCharacter(_ value: String) -> String {
         guard let first = value.first else { return value }
         return String(first).uppercased() + value.dropFirst()
+    }
+
+    private func refreshSidebarPreviewCache() {
+        var snapshot: [UUID: String] = [:]
+        for note in store.notes {
+            snapshot[note.id] = note.plainTextCache
+        }
+        sidebarContentPreviewCache = snapshot
     }
 
     @ViewBuilder
     private func formattingToolbar() -> some View {
         HStack(spacing: 4) {
             Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-sans"]) }) {
-                Text("Aa").font(.system(size: 10, weight: .semibold)).frame(width: 24, height: 20).background(editorState.fontStyle == .sans ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                Text("Aa").font(.system(size: 10, weight: .semibold)).frame(width: 24, height: 20).background(Color.clear).cornerRadius(4)
             }.buttonStyle(PointerPlainButtonStyle())
 
             Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-serif"]) }) {
-                Text("Ag").font(.system(size: 10, weight: .semibold, design: .serif)).frame(width: 24, height: 20).background(editorState.fontStyle == .serif ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                Text("Ag").font(.system(size: 10, weight: .semibold, design: .serif)).frame(width: 24, height: 20).background(Color.clear).cornerRadius(4)
             }.buttonStyle(PointerPlainButtonStyle())
 
             Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-mono"]) }) {
-                Text("M").font(.system(size: 10, weight: .semibold, design: .monospaced)).frame(width: 20, height: 20).background(editorState.fontStyle == .mono ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+                Text("M").font(.system(size: 10, weight: .semibold, design: .monospaced)).frame(width: 20, height: 20).background(Color.clear).cornerRadius(4)
             }.buttonStyle(PointerPlainButtonStyle())
 
             Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
@@ -548,7 +687,7 @@ struct MainPanel: View {
                     store.updateTitle(noteID: selectedNoteID, title: nextTitle)
                 }
             ))
-            .font(.system(size: 34, weight: .bold))
+            .font(.system(size: 30, weight: .bold))
             .lineLimit(1)
         }
         .textFieldStyle(.plain)
@@ -562,6 +701,7 @@ struct SidebarView: View {
     @Binding var queryBuffer: String
     @Binding var selectedNoteID: UUID?
     var filteredNotes: [Note]
+    var contentPreviewCache: [UUID: String]
     @FocusState var focus: MainPanel.FocusField?
     var createNewNote: () -> Void
     @Environment(NoteStore.self) private var store
@@ -586,7 +726,7 @@ struct SidebarView: View {
                                 .padding(.bottom, 4)
                             
                             if let firstNote = filteredNotes.first {
-                                NoteRowView(note: firstNote, isSelected: selectedNoteID == firstNote.id)
+                                NoteRowView(note: firstNote, isSelected: selectedNoteID == firstNote.id, contentPreviewText: contentPreviewCache[firstNote.id] ?? firstNote.plainTextCache)
                                     .id("top-\(firstNote.id.uuidString)-\(firstNote.title)")
                                     .onTapGesture {
                                         selectedNoteID = firstNote.id
@@ -607,7 +747,7 @@ struct SidebarView: View {
                                 .padding(.bottom, 4)
                             
                             ForEach(displayPinned) { note in
-                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
+                                NoteRowView(note: note, isSelected: selectedNoteID == note.id, contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache)
                                     .id("pinned-\(note.id.uuidString)-\(note.title)")
                                     .onTapGesture {
                                         selectedNoteID = note.id
@@ -637,7 +777,7 @@ struct SidebarView: View {
                                 .padding(.bottom, 4)
                             
                             ForEach(displayRecent) { note in
-                                NoteRowView(note: note, isSelected: selectedNoteID == note.id)
+                                NoteRowView(note: note, isSelected: selectedNoteID == note.id, contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache)
                                     .id("recent-\(note.id.uuidString)-\(note.title)")
                                     .onTapGesture {
                                         selectedNoteID = note.id
@@ -666,18 +806,20 @@ struct SidebarView: View {
                             .padding(.bottom, 4)
                         
                         Button(action: createNewNote) {
-                            HStack(spacing: 12) {
+                            HStack(spacing: 10) {
                                 ZRectangleIcon(icon: "plus", isSelected: false)
                                 Text(queryBuffer.isEmpty ? "Create New Note" : "Create \"\(queryBuffer)\"")
-                                    .font(.system(size: 14, weight: .medium))
+                                    .font(.system(size: 12, weight: .medium))
                                     .foregroundColor(Theme.text)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
                                 Spacer()
                                 Text("Cmd+N")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 8))
                                     .foregroundColor(Theme.textMuted)
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 2)
                             .background(Color.clear)
                             .contentShape(Rectangle())
                         }
@@ -807,6 +949,8 @@ struct ZRectangleIcon: View {
 struct NoteRowView: View {
     let note: Note
     let isSelected: Bool
+    let contentPreviewText: String
+    @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
 
     var body: some View {
         HStack(spacing: 12) {
@@ -822,14 +966,16 @@ struct NoteRowView: View {
                 HStack(spacing: 4) {
                     Text(timeString(from: note.updatedAt))
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                    Text("•")
-                        .fixedSize(horizontal: true, vertical: false)
+
                     if note.pinned {
-                        Image(systemName: "pin.fill").font(.system(size: 8)).foregroundColor(Theme.pinGold)
                         Text("•")
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.pinGold)
                     }
-                    Text(preview(for: note.plainTextCache))
+
+                    Text("•")
+                    Text(preview(for: contentPreviewText))
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -850,10 +996,16 @@ struct NoteRowView: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 12)
-        .background(isSelected ? Theme.selection : Color.clear)
+        .background(isSelected ? rowSelectionColor : Color.clear)
         .cornerRadius(8)
         .padding(.horizontal, 8)
         .contentShape(Rectangle())
+    }
+
+    private var rowSelectionColor: Color {
+        selectionColorChoice == "gray"
+            ? Color(red: 0.38, green: 0.40, blue: 0.45)
+            : Theme.selection
     }
     
     private func preview(for text: String) -> String {
@@ -861,7 +1013,7 @@ struct NoteRowView: View {
         if trimmed.isEmpty { return "No additional text" }
         return trimmed.replacingOccurrences(of: "\n", with: " ")
     }
-    
+
     private func timeString(from date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d"

@@ -18,6 +18,7 @@ struct PreferencesView: View {
     @State private var notionOAuthState: String
     @State private var notionMessage: String?
     @State private var isAwaitingOAuthCallback = false
+    @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
 
     init() {
         let shortcut = GlobalHotkeyManager.shared.currentShortcut
@@ -305,7 +306,7 @@ struct PreferencesView: View {
     }
 
     var body: some View {
-        Form {
+        ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Notsy Preferences")
                     .font(.headline)
@@ -406,6 +407,19 @@ struct PreferencesView: View {
                 }
 
                 Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Appearance")
+                        .font(.subheadline)
+
+                    Picker("Selection Highlight", selection: $selectionColorChoice) {
+                        Text("Blue").tag("blue")
+                        Text("Gray").tag("gray")
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Divider()
                 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Data Management")
@@ -440,6 +454,7 @@ struct PreferencesView: View {
                 }
             }
             .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onDisappear {
             removeKeyMonitor()
