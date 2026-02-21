@@ -26,6 +26,10 @@ struct MainPanel: View {
     @State private var showColorPalette = false
     @State private var activeEditorColor = NSColor.white
     @State private var previewImage: NSImage?
+    @AppStorage("notsy.sidebar.width") private var sidebarWidth: Double = 300
+    @AppStorage("notsy.sidebar.collapsed") private var sidebarCollapsed: Bool = false
+    @State private var sidebarDragStartWidth: CGFloat?
+    @State private var sidebarRuntimeWidth: CGFloat = 300
 
     enum FocusField: Hashable {
         case search
@@ -94,17 +98,94 @@ struct MainPanel: View {
             // MAIN CONTENT
             HStack(spacing: 0) {
                 // LEFT PANEL (SIDEBAR)
-                SidebarView(
-                    queryBuffer: $queryBuffer,
-                    selectedNoteID: $selectedNoteID,
-                    filteredNotes: filteredNotes,
-                    focus: _focus,
-                    createNewNote: { createNewNote(fromQuery: true) }
-                )
-                .frame(width: 300)
-                .background(Theme.sidebarBg)
+                if sidebarCollapsed {
+                    VStack {
+                        Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false } }) {
+                            Image(systemName: "sidebar.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Theme.textMuted)
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(PointerPlainButtonStyle())
+                        .padding(.top, 10)
+                        Spacer()
+                    }
+                    .frame(width: 28)
+                    .background(Theme.sidebarBg)
+                    Divider().background(Theme.border)
+                } else {
+                    ZStack(alignment: .topTrailing) {
+                        SidebarView(
+                            queryBuffer: $queryBuffer,
+                            selectedNoteID: $selectedNoteID,
+                            filteredNotes: filteredNotes,
+                            focus: _focus,
+                            createNewNote: { createNewNote(fromQuery: true) }
+                        )
+                        .frame(width: clampedSidebarWidth)
+                        .background(Theme.sidebarBg)
 
-                Divider().background(Theme.border)
+                        Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = true } }) {
+                            Image(systemName: "sidebar.left")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Theme.textMuted)
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(PointerPlainButtonStyle())
+                        .padding(.top, 8)
+                        .padding(.trailing, 8)
+                    }
+                    .frame(width: clampedSidebarWidth)
+
+                    Rectangle()
+                        .fill(Theme.border)
+                        .frame(width: 1)
+                        .overlay {
+                            ZStack {
+                                // Visible grab indicator so users discover resizing.
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Theme.elementBg.opacity(0.85))
+                                    .frame(width: 10, height: 44)
+                                    .overlay {
+                                        VStack(spacing: 4) {
+                                            Capsule().fill(Theme.textMuted.opacity(0.9)).frame(width: 4, height: 4)
+                                            Capsule().fill(Theme.textMuted.opacity(0.9)).frame(width: 4, height: 4)
+                                            Capsule().fill(Theme.textMuted.opacity(0.9)).frame(width: 4, height: 4)
+                                        }
+                                    }
+                                    .padding(.vertical, 120)
+
+                                Color.clear
+                                    .frame(width: 10)
+                                    .contentShape(Rectangle())
+                                    .gesture(
+                                        DragGesture(minimumDistance: 0)
+                                            .onChanged { value in
+                                                if sidebarDragStartWidth == nil {
+                                                    sidebarDragStartWidth = clampedSidebarWidth
+                                                }
+                                                let base = sidebarDragStartWidth ?? clampedSidebarWidth
+                                                let proposed = base + value.translation.width
+                                                sidebarRuntimeWidth = max(200, min(460, proposed))
+                                            }
+                                            .onEnded { _ in
+                                                sidebarWidth = Double(clampedSidebarWidth)
+                                                sidebarDragStartWidth = nil
+                                            }
+                                    )
+                                    .onHover { hovering in
+                                        if hovering {
+                                            NSCursor.resizeLeftRight.set()
+                                        }
+                                    }
+                            }
+                            .onHover { hovering in
+                                if hovering {
+                                    NSCursor.resizeLeftRight.set()
+                                }
+                            }
+                        }
+                }
 
                 // RIGHT PANEL (EDITOR)
                 VStack(spacing: 0) {
@@ -271,6 +352,7 @@ struct MainPanel: View {
         }
         .onReceive(focusSearchPub) { _ in focus = .search }
         .onAppear {
+            sidebarRuntimeWidth = CGFloat(sidebarWidth)
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in handleKeyDown(event) }
             if selectedNoteID == nil, let first = store.notes.first { 
                 selectedNoteID = first.id 
@@ -355,6 +437,10 @@ struct MainPanel: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, yyyy"
         return formatter.string(from: date)
+    }
+
+    private var clampedSidebarWidth: CGFloat {
+        max(200, min(460, sidebarRuntimeWidth))
     }
 
     private func postColorAction(_ action: String) {
@@ -731,20 +817,28 @@ struct NoteRowView: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(isSelected ? .white : Theme.text)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                 
                 HStack(spacing: 4) {
                     Text(timeString(from: note.updatedAt))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     Text("•")
+                        .fixedSize(horizontal: true, vertical: false)
                     if note.pinned {
                         Image(systemName: "pin.fill").font(.system(size: 8)).foregroundColor(Theme.pinGold)
                         Text("•")
                     }
                     Text(preview(for: note.plainTextCache))
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
                 .font(.system(size: 12))
                 .foregroundColor(isSelected ? .white.opacity(0.8) : Theme.textMuted)
+                .lineLimit(1)
+                .truncationMode(.tail)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             
             Spacer()
             

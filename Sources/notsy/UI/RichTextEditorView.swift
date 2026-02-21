@@ -11,7 +11,8 @@ class EditorScrollView: NSScrollView {
 
 class CustomTextView: NSTextView {
     static let editorFontSize: CGFloat = 15
-    private static let imageThumbnailWidth: CGFloat = 88
+    private static let imageThumbnailWidth: CGFloat = 56
+    private static let imageThumbnailMaxHeight: CGFloat = 34
     private var isNormalizingAttachments = false
 
     private static func defaultParagraphStyle() -> NSParagraphStyle {
@@ -242,7 +243,9 @@ class CustomTextView: NSTextView {
         let imageSize = attachment.image?.size ?? attachment.attachmentCell?.cellSize() ?? .zero
         guard imageSize.width > 0, imageSize.height > 0 else { return }
 
-        let scale = min(1.0, maxWidth / imageSize.width)
+        let widthScale = maxWidth / imageSize.width
+        let heightScale = Self.imageThumbnailMaxHeight / imageSize.height
+        let scale = min(1.0, widthScale, heightScale)
         let newSize = NSSize(width: floor(imageSize.width * scale), height: floor(imageSize.height * scale))
         attachment.bounds = NSRect(origin: .zero, size: newSize)
 
