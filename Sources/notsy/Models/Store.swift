@@ -11,7 +11,11 @@ final class NoteStore {
     private let saveURL: URL
     private var syncTasks: [UUID: Task<Void, Never>] = [:]
     private var clearNotionStatusTask: Task<Void, Never>?
+    private var notionSyncIndicatorDelayTask: Task<Void, Never>?
     var hasPendingNotionSync: Bool { !syncTasks.isEmpty || notionSyncInFlight }
+    private var isNotionSyncEnabled: Bool {
+        UserDefaults.standard.bool(forKey: NotionSyncService.enabledDefaultsKey)
+    }
 
     init() {
         let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -102,6 +106,8 @@ final class NoteStore {
     }
 
     private func scheduleNotionSync(for note: Note) {
+        guard isNotionSyncEnabled else { return }
+
         let snapshot = NotionNoteSnapshot(
             id: note.id,
             title: note.title,
@@ -111,17 +117,28 @@ final class NoteStore {
         syncTasks[note.id] = Task {
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             guard !Task.isCancelled else { return }
+            guard isNotionSyncEnabled else { return }
+
             await MainActor.run {
                 clearNotionStatusTask?.cancel()
-                notionSyncInFlight = true
                 notionSyncStatusIsError = false
-                notionSyncStatusMessage = "Syncing to Notion..."
+                notionSyncIndicatorDelayTask?.cancel()
+                notionSyncIndicatorDelayTask = Task {
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run {
+                        notionSyncInFlight = true
+                        notionSyncStatusMessage = "Syncing to Notion..."
+                    }
+                }
             }
 
             let result = await NotionSyncService.shared.sync(note: snapshot)
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
+                notionSyncIndicatorDelayTask?.cancel()
+                notionSyncIndicatorDelayTask = nil
                 notionSyncInFlight = false
                 syncTasks.removeValue(forKey: note.id)
 
@@ -146,6 +163,18 @@ final class NoteStore {
                 }
             }
         }
+    }
+
+    func cancelPendingNotionSync() {
+        for task in syncTasks.values {
+            task.cancel()
+        }
+        syncTasks.removeAll()
+        clearNotionStatusTask?.cancel()
+        notionSyncIndicatorDelayTask?.cancel()
+        notionSyncInFlight = false
+        notionSyncStatusIsError = false
+        notionSyncStatusMessage = nil
     }
 
     func flushPendingNotionSync(timeoutNanoseconds: UInt64 = 6_000_000_000) async -> Bool {

@@ -113,13 +113,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func toggleWindow() {
-        if panel.isVisible {
-            // If the panel is visible on a different display, move it instead of requiring a second key press.
-            if shouldMoveVisiblePanelToActiveScreen() {
-                showWindow()
-            } else {
-                hideWindow()
-            }
+        guard panel.isVisible else {
+            showWindow()
+            return
+        }
+
+        // Only hide when Notsy is already the active key panel on the current screen.
+        // If it's merely visible but not focused/frontmost, one hotkey press should bring it forward.
+        let shouldHide = NSApp.isActive && panel.isKeyWindow && !shouldMoveVisiblePanelToActiveScreen()
+        if shouldHide {
+            hideWindow()
         } else {
             showWindow()
         }

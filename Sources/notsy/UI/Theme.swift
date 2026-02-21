@@ -9,9 +9,9 @@ enum NotsyThemeVariant: String, CaseIterable {
     var label: String {
         switch self {
         case .light: return "Light"
-        case .bluish: return "Dark"
-        case .pinkish: return "Pinkish"
-        case .greenish: return "Greenish"
+        case .bluish: return "Midnight"
+        case .pinkish: return "Graphite"
+        case .greenish: return "Slate"
         }
     }
 }
@@ -73,31 +73,31 @@ struct Theme {
             )
         case .pinkish:
             return ThemePalette(
-                bg: Color(red: 0.13, green: 0.10, blue: 0.12),
-                sidebarBg: Color(red: 0.15, green: 0.11, blue: 0.14),
-                elementBg: Color(red: 0.21, green: 0.15, blue: 0.19),
-                selection: Color(red: 0.84, green: 0.47, blue: 0.71),
-                text: Color(red: 0.96, green: 0.93, blue: 0.95),
-                textMuted: Color(red: 0.70, green: 0.62, blue: 0.68),
-                border: Color(red: 0.29, green: 0.21, blue: 0.27),
+                bg: Color(red: 0.11, green: 0.12, blue: 0.14),
+                sidebarBg: Color(red: 0.13, green: 0.14, blue: 0.16),
+                elementBg: Color(red: 0.17, green: 0.18, blue: 0.21),
+                selection: Color(red: 0.45, green: 0.58, blue: 0.77),
+                text: Color(red: 0.93, green: 0.94, blue: 0.96),
+                textMuted: Color(red: 0.61, green: 0.64, blue: 0.69),
+                border: Color(red: 0.22, green: 0.24, blue: 0.28),
                 pinGold: Color.green,
                 pinBg: Color.green.opacity(0.2),
-                calloutBg: Color(red: 0.25, green: 0.16, blue: 0.24),
+                calloutBg: Color(red: 0.16, green: 0.19, blue: 0.26),
                 editorText: NSColor.white,
                 preferredColorScheme: .dark
             )
         case .greenish:
             return ThemePalette(
-                bg: Color(red: 0.09, green: 0.12, blue: 0.10),
-                sidebarBg: Color(red: 0.11, green: 0.14, blue: 0.12),
-                elementBg: Color(red: 0.15, green: 0.19, blue: 0.16),
-                selection: Color(red: 0.35, green: 0.67, blue: 0.49),
-                text: Color(red: 0.93, green: 0.96, blue: 0.94),
-                textMuted: Color(red: 0.62, green: 0.70, blue: 0.65),
-                border: Color(red: 0.21, green: 0.27, blue: 0.23),
+                bg: Color(red: 0.10, green: 0.11, blue: 0.12),
+                sidebarBg: Color(red: 0.12, green: 0.13, blue: 0.14),
+                elementBg: Color(red: 0.16, green: 0.17, blue: 0.18),
+                selection: Color(red: 0.40, green: 0.55, blue: 0.66),
+                text: Color(red: 0.92, green: 0.94, blue: 0.95),
+                textMuted: Color(red: 0.60, green: 0.65, blue: 0.68),
+                border: Color(red: 0.22, green: 0.24, blue: 0.26),
                 pinGold: Color.green,
                 pinBg: Color.green.opacity(0.2),
-                calloutBg: Color(red: 0.16, green: 0.22, blue: 0.17),
+                calloutBg: Color(red: 0.15, green: 0.18, blue: 0.20),
                 editorText: NSColor.white,
                 preferredColorScheme: .dark
             )

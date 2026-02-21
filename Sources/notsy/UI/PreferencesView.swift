@@ -14,6 +14,7 @@ struct PreferencesView: View {
     @State private var notionIntegrationSecret: String
     @State private var notionMessage: String?
     @State private var isTestingNotionConnection = false
+    @State private var notionAutosaveTask: Task<Void, Never>?
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
 
@@ -143,12 +144,16 @@ struct PreferencesView: View {
         32: "U", 9: "V", 13: "W", 7: "X", 16: "Y", 6: "Z"
     ]
 
-    private func saveNotionSettings() {
+    private func persistNotionSettings(showMessage: Bool) {
         let trimmedDatabaseID = notionDatabaseID.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedIntegrationSecret = notionIntegrationSecret.trimmingCharacters(in: .whitespacesAndNewlines)
 
         UserDefaults.standard.set(notionSyncEnabled, forKey: NotionSyncService.enabledDefaultsKey)
         UserDefaults.standard.set(trimmedDatabaseID, forKey: NotionSyncService.databaseIDDefaultsKey)
+
+        if !notionSyncEnabled {
+            store.cancelPendingNotionSync()
+        }
 
         if !trimmedIntegrationSecret.isEmpty {
             guard KeychainHelper.save(
@@ -161,12 +166,28 @@ struct PreferencesView: View {
             }
         }
 
+        guard showMessage else { return }
         if notionSyncEnabled {
             notionMessage = (trimmedDatabaseID.isEmpty || trimmedIntegrationSecret.isEmpty)
                 ? "Saved. Add Database ID and Integration Secret before sync can run."
                 : "Notion sync settings saved."
         } else {
             notionMessage = "Notion settings saved."
+        }
+    }
+
+    private func saveNotionSettings() {
+        persistNotionSettings(showMessage: true)
+    }
+
+    private func scheduleNotionAutosave() {
+        notionAutosaveTask?.cancel()
+        notionAutosaveTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                persistNotionSettings(showMessage: false)
+            }
         }
     }
 
@@ -228,12 +249,22 @@ struct PreferencesView: View {
                         .font(.subheadline)
 
                     Toggle("Enable Notion sync", isOn: $notionSyncEnabled)
+                        .onChange(of: notionSyncEnabled) { _, isEnabled in
+                            persistNotionSettings(showMessage: false)
+                            if !isEnabled {
+                                store.cancelPendingNotionSync()
+                                notionMessage = "Notion sync disabled."
+                            }
+                        }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Database ID")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         TextField("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", text: $notionDatabaseID)
+                            .onChange(of: notionDatabaseID) { _, _ in
+                                scheduleNotionAutosave()
+                            }
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
@@ -241,6 +272,9 @@ struct PreferencesView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                         SecureField("ntn_... or secret_...", text: $notionIntegrationSecret)
+                            .onChange(of: notionIntegrationSecret) { _, _ in
+                                scheduleNotionAutosave()
+                            }
                     }
 
                     HStack {
