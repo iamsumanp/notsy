@@ -1,12 +1,20 @@
 import AppKit
 import SwiftUI
 
+enum EditorFontStyle: Equatable {
+    case sans
+    case serif
+    case mono
+}
+
 struct EditorState: Equatable {
     var isBold: Bool = false
     var isItalic: Bool = false
     var isUnderline: Bool = false
+    var isStrikethrough: Bool = false
     var isBullet: Bool = false
     var isCheckbox: Bool = false
+    var fontStyle: EditorFontStyle = .mono
 }
 
 struct MainPanel: View {
@@ -15,6 +23,9 @@ struct MainPanel: View {
     @State private var queryBuffer: String = ""
     @State private var selectedNoteID: UUID?
     @State private var editorState = EditorState()
+    @State private var showColorPalette = false
+    @State private var activeEditorColor = NSColor.white
+    @State private var previewImage: NSImage?
 
     enum FocusField: Hashable {
         case search
@@ -26,6 +37,7 @@ struct MainPanel: View {
 
     let newNotePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyNewNote"))
     let focusSearchPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyFocusSearch"))
+    let previewImagePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyPreviewImage"))
 
     var filteredNotes: [Note] {
         if queryBuffer.isEmpty { return store.notes }
@@ -101,113 +113,45 @@ struct MainPanel: View {
                         
                         let note = store.notes[noteIndex]
                         
-                        // Breadcrumbs & Tools
-                        HStack {
-                            HStack(spacing: 6) {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 12))
-                                Text("Notsy")
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 10))
-                                Text("~/Library/Application Support/Notsy")
-                                    .truncationMode(.middle)
-                                    .lineLimit(1)
+                        // Title/meta + formatting controls (top section)
+                        VStack(alignment: .leading, spacing: 10) {
+                            titleEditor(for: note, selectedNoteID: selectedNoteID)
+
+                            HStack(spacing: 12) {
+                                Text("Created \(metaTimeString(from: note.createdAt))")
+                                Text("•")
+                                Text("\(note.plainTextCache.split(separator: " ").count) words")
                             }
+                            .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(Theme.textMuted)
-                            .font(.system(size: 12, weight: .medium))
-                            
-                            Spacer()
-                            
-                            HStack(spacing: 4) {
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "bold"]) }) { 
-                                    Text("B").font(.system(size: 12, weight: .bold)).frame(width: 20, height: 20).background(editorState.isBold ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-                                }.buttonStyle(.plain)
-                                
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "italic"]) }) { 
-                                    Text("I").font(.system(size: 12, weight: .semibold).italic()).frame(width: 20, height: 20).background(editorState.isItalic ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-                                }.buttonStyle(.plain)
-                                
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "underline"]) }) { 
-                                    Text("U").font(.system(size: 12, weight: .semibold)).underline().frame(width: 20, height: 20).background(editorState.isUnderline ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-                                }.buttonStyle(.plain)
-                                
-                                Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
-                                
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "list"]) }) { 
-                                    Image(systemName: "list.bullet").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isBullet ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-                                }.buttonStyle(.plain)
-                                
-                                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "checkbox"]) }) { 
-                                    Image(systemName: "checkmark.square").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isCheckbox ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-                                }.buttonStyle(.plain)
 
-                                Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
-
-                                Button(action: { 
-                                    withAnimation(.spring()) {
-                                        if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
-                                            store.togglePin(for: store.notes[idx])
-                                        }
+                            formattingToolbar()
+                        }
+                        .zIndex(showColorPalette ? 50 : 1)
+                        .overlay(alignment: .topTrailing) {
+                            Button(action: {
+                                withAnimation(.spring()) {
+                                    if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
+                                        store.togglePin(for: store.notes[idx])
                                     }
-                                }) {
-                                    Image(systemName: note.pinned ? "pin.fill" : "pin")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(note.pinned ? Theme.pinGold : Theme.textMuted)
-                                        .frame(width: 20, height: 20)
-                                }.buttonStyle(.plain)
+                                }
+                            }) {
+                                Image(systemName: note.pinned ? "pin.fill" : "pin")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(note.pinned ? Theme.pinGold : Theme.textMuted)
+                                    .frame(width: 24, height: 24)
                             }
-                            .foregroundColor(Theme.textMuted)
+                            .buttonStyle(.plain)
+                            .offset(x: 18, y: 0)
                         }
                         .padding(.horizontal, 32)
                         .padding(.top, 24)
-                        .padding(.bottom, 16)
-                        
-                        // Title Editor
-                        HStack {
-                            if note.pinned {
-                                Image(systemName: "pin.fill")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(Theme.pinGold)
-                            }
-                            TextField("Untitled", text: Binding(
-                                get: {
-                                    if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
-                                        return store.notes[idx].title
-                                    }
-                                    return note.title
-                                },
-                                set: { newValue in
-                                    if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
-                                        store.notes[idx].title = newValue
-                                        store.notes[idx].updatedAt = Date()
-                                        store.saveNoteChanges(noteID: store.notes[idx].id)
-                                    }
-                                }
-                            ))
-                            .font(.system(size: 32, weight: .bold))
-                        }
-                        .textFieldStyle(.plain)
-                        .foregroundColor(Theme.text)
-                        .padding(.horizontal, 32)
-                        .padding(.bottom, 12)
-                        .focused($focus, equals: .title)
-                        .onSubmit { focus = .editor }
-
-                        // Meta Row
-                        HStack(spacing: 12) {
-                            Text("Created \(metaTimeString(from: note.createdAt))")
-                            Text("•")
-                            Text("\(note.plainTextCache.split(separator: " ").count) words")
-                        }
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Theme.textMuted)
-                        .padding(.horizontal, 32)
-                        .padding(.bottom, 24)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.bottom, 14)
                         
                         RichTextEditorWrapper(note: note, store: store, editorState: $editorState, isFocused: _focus)
                             .padding(.horizontal, 24)
                             .padding(.bottom, 16)
+                            .zIndex(0)
                     } else {
                         VStack(spacing: 16) {
                             Image(systemName: "doc.text").font(.system(size: 40)).foregroundColor(Theme.border)
@@ -224,10 +168,19 @@ struct MainPanel: View {
             
             // BOTTOM BAR
             HStack {
-                HStack(spacing: 16) {
-                    ShortcutBadge(key: "↵", label: "Open")
-                    ShortcutBadge(key: "Tab", label: "Actions")
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12))
+                    Text("Notsy")
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10))
+                    Text("Application Support/Notsy")
+                        .truncationMode(.middle)
+                        .lineLimit(1)
                 }
+                .foregroundColor(Theme.textMuted)
+                .font(.system(size: 12, weight: .medium))
+                .padding(.leading, 8)
                 
                 Button(action: {
                     withAnimation {
@@ -268,7 +221,41 @@ struct MainPanel: View {
         .background(Theme.sidebarBg)
         .edgesIgnoringSafeArea(.all)
         .preferredColorScheme(.dark)
+        .overlay {
+            if let previewImage {
+                ZStack {
+                    Color.black.opacity(0.65)
+                        .ignoresSafeArea()
+                        .onTapGesture { self.previewImage = nil }
+
+                    VStack(spacing: 12) {
+                        HStack {
+                            Spacer()
+                            Button(action: { self.previewImage = nil }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 22))
+                                    .foregroundColor(Theme.textMuted)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Image(nsImage: previewImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 820, maxHeight: 520)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .padding(20)
+                }
+                .zIndex(200)
+            }
+        }
         .onReceive(newNotePub) { _ in createNewNote(fromQuery: false) }
+        .onReceive(previewImagePub) { notification in
+            if let image = notification.userInfo?["image"] as? NSImage {
+                previewImage = image
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpened"))) { _ in
             store.sortNotes()
             queryBuffer = ""
@@ -297,6 +284,10 @@ struct MainPanel: View {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        if event.keyCode == 53, previewImage != nil {
+            previewImage = nil
+            return nil
+        }
         // Cmd + , (Preferences)
         if event.modifierFlags.contains(.command) && event.keyCode == 43 {
             NotificationCenter.default.post(name: NSNotification.Name("NotsyShowPreferences"), object: nil)
@@ -345,17 +336,18 @@ struct MainPanel: View {
 
     private func createNewNote(fromQuery: Bool) {
         let hasQuery = fromQuery && !queryBuffer.isEmpty
-        let content = hasQuery ? queryBuffer : ""
-        let newNote = Note(title: content, plainTextCache: "", createdAt: Date(), updatedAt: Date())
+        let initialTitle = hasQuery ? capitalizeFirstCharacter(queryBuffer) : ""
+        let newNote = Note(title: initialTitle, plainTextCache: "", createdAt: Date(), updatedAt: Date())
 
-        let attrStr = NSAttributedString(string: "", attributes: [.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.white])
+        let attrStr = NSAttributedString(string: "", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .foregroundColor: NSColor.white])
         newNote.update(with: attrStr)
         store.insert(newNote)
         queryBuffer = ""
         selectedNoteID = newNote.id
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            focus = .editor
+            // For a truly new note (no inferred title), put cursor in title first.
+            focus = hasQuery ? .editor : .title
         }
     }
 
@@ -363,6 +355,120 @@ struct MainPanel: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, yyyy"
         return formatter.string(from: date)
+    }
+
+    private func postColorAction(_ action: String) {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("NotsyToolbarAction"),
+            object: nil,
+            userInfo: ["action": action]
+        )
+    }
+
+    private func postCustomColor(_ color: NSColor) {
+        activeEditorColor = color
+        NotificationCenter.default.post(
+            name: NSNotification.Name("NotsyToolbarAction"),
+            object: nil,
+            userInfo: ["action": "color-custom", "nsColor": color]
+        )
+    }
+
+    private func capitalizeFirstCharacter(_ value: String) -> String {
+        guard let first = value.first else { return value }
+        return String(first).uppercased() + value.dropFirst()
+    }
+
+    @ViewBuilder
+    private func formattingToolbar() -> some View {
+        HStack(spacing: 4) {
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-sans"]) }) {
+                Text("Aa").font(.system(size: 10, weight: .semibold)).frame(width: 24, height: 20).background(editorState.fontStyle == .sans ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-serif"]) }) {
+                Text("Ag").font(.system(size: 10, weight: .semibold, design: .serif)).frame(width: 24, height: 20).background(editorState.fontStyle == .serif ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-mono"]) }) {
+                Text("M").font(.system(size: 10, weight: .semibold, design: .monospaced)).frame(width: 20, height: 20).background(editorState.fontStyle == .mono ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "bold"]) }) {
+                Text("B").font(.system(size: 12, weight: .bold)).frame(width: 20, height: 20).background(editorState.isBold ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "italic"]) }) {
+                Text("I").font(.system(size: 12, weight: .semibold).italic()).frame(width: 20, height: 20).background(editorState.isItalic ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "underline"]) }) {
+                Text("U").font(.system(size: 12, weight: .semibold)).underline().frame(width: 20, height: 20).background(editorState.isUnderline ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "strikethrough"]) }) {
+                Text("S").font(.system(size: 12, weight: .semibold)).strikethrough().frame(width: 20, height: 20).background(editorState.isStrikethrough ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "list"]) }) {
+                Image(systemName: "list.bullet").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isBullet ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "checkbox"]) }) {
+                Image(systemName: "checkmark.square").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isCheckbox ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
+
+            ColorDot(color: activeEditorColor) { postCustomColor(activeEditorColor) }
+            Button(action: { showColorPalette.toggle() }) {
+                Image(systemName: "eyedropper.halffull")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(PointerPlainButtonStyle())
+            .popover(isPresented: $showColorPalette, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                ColorPalettePopover { color in
+                    postCustomColor(color)
+                    showColorPalette = false
+                }
+            }
+        }
+        .foregroundColor(Theme.textMuted)
+    }
+
+    @ViewBuilder
+    private func titleEditor(for note: Note, selectedNoteID: UUID) -> some View {
+        HStack {
+            if note.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(Theme.pinGold)
+            }
+            TextField("Untitled", text: Binding(
+                get: {
+                    if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
+                        return store.notes[idx].title
+                    }
+                    return note.title
+                },
+                set: { newValue in
+                    let previousTitle = store.notes.first(where: { $0.id == selectedNoteID })?.title ?? ""
+                    let nextTitle = previousTitle.isEmpty ? capitalizeFirstCharacter(newValue) : newValue
+                    store.updateTitle(noteID: selectedNoteID, title: nextTitle)
+                }
+            ))
+            .font(.system(size: 34, weight: .bold))
+            .lineLimit(1)
+        }
+        .textFieldStyle(.plain)
+        .foregroundColor(Theme.text)
+        .focused($focus, equals: .title)
+        .onSubmit { focus = .editor }
     }
 }
 
@@ -395,7 +501,7 @@ struct SidebarView: View {
                             
                             if let firstNote = filteredNotes.first {
                                 NoteRowView(note: firstNote, isSelected: selectedNoteID == firstNote.id)
-                                    .id("top-\(firstNote.id)")
+                                    .id("top-\(firstNote.id.uuidString)-\(firstNote.title)")
                                     .onTapGesture {
                                         selectedNoteID = firstNote.id
                                         focus = .editor
@@ -416,7 +522,7 @@ struct SidebarView: View {
                             
                             ForEach(displayPinned) { note in
                                 NoteRowView(note: note, isSelected: selectedNoteID == note.id)
-                                    .id("pinned-\(note.id)")
+                                    .id("pinned-\(note.id.uuidString)-\(note.title)")
                                     .onTapGesture {
                                         selectedNoteID = note.id
                                         focus = .editor
@@ -446,7 +552,7 @@ struct SidebarView: View {
                             
                             ForEach(displayRecent) { note in
                                 NoteRowView(note: note, isSelected: selectedNoteID == note.id)
-                                    .id("recent-\(note.id)")
+                                    .id("recent-\(note.id.uuidString)-\(note.title)")
                                     .onTapGesture {
                                         selectedNoteID = note.id
                                         focus = .editor
@@ -530,6 +636,70 @@ struct ShortcutBadge: View {
                 .font(.system(size: 12))
                 .foregroundColor(Theme.textMuted)
         }
+    }
+}
+
+struct ColorDot: View {
+    let color: NSColor
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            Circle()
+                .fill(Color(nsColor: color))
+                .frame(width: 12, height: 12)
+                .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                .frame(width: 20, height: 20)
+        }
+        .buttonStyle(PointerPlainButtonStyle())
+    }
+}
+
+struct PointerPlainButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.8 : 1.0)
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+    }
+}
+
+struct ColorPalettePopover: View {
+    let onSelect: (NSColor) -> Void
+
+    private let palette: [NSColor] = [
+        .white, .systemGray, .systemRed, .systemOrange, .systemYellow, .systemGreen, .systemMint, .systemTeal, .systemBlue, .systemIndigo, .systemPurple, .systemPink,
+        NSColor(red: 0.92, green: 0.58, blue: 0.58, alpha: 1), NSColor(red: 0.86, green: 0.72, blue: 0.52, alpha: 1), NSColor(red: 0.61, green: 0.80, blue: 0.45, alpha: 1), NSColor(red: 0.45, green: 0.77, blue: 0.73, alpha: 1),
+        NSColor(red: 0.45, green: 0.62, blue: 0.95, alpha: 1), NSColor(red: 0.65, green: 0.52, blue: 0.95, alpha: 1), NSColor(red: 0.88, green: 0.50, blue: 0.83, alpha: 1), NSColor(red: 0.74, green: 0.74, blue: 0.74, alpha: 1)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Colors")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Theme.textMuted)
+
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(20), spacing: 8), count: 6), spacing: 8) {
+                ForEach(Array(palette.enumerated()), id: \.offset) { _, color in
+                    Button(action: { onSelect(color) }) {
+                        Circle()
+                            .fill(Color(nsColor: color))
+                            .frame(width: 16, height: 16)
+                            .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(10)
+        .frame(width: 180)
+        .background(Theme.sidebarBg)
     }
 }
 

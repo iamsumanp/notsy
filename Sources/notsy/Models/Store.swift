@@ -66,16 +66,34 @@ final class NoteStore {
     }
 
     func saveNoteChanges(noteID: UUID? = nil) {
-        // Trigger SwiftUI update explicitly without sorting!
-        // Sorting while actively typing causes indices to shift and overwrites the wrong file.
-        let newNotes = notes
-        notes = newNotes
+        let targetID = noteID ?? notes.max(by: { $0.updatedAt < $1.updatedAt })?.id
+        if let targetID,
+           let index = notes.firstIndex(where: { $0.id == targetID }) {
+            // Force a structural array change so Observation updates list rows immediately.
+            var newNotes = notes
+            let sameNote = newNotes.remove(at: index)
+            newNotes.insert(sameNote, at: index)
+            notes = newNotes
+        } else {
+            notes = notes
+        }
         save()
 
-        let targetID = noteID ?? notes.max(by: { $0.updatedAt < $1.updatedAt })?.id
         guard let targetID,
               let note = notes.first(where: { $0.id == targetID }) else { return }
         scheduleNotionSync(for: note)
+    }
+
+    func updateTitle(noteID: UUID, title: String) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        let previous = notes[index].title
+        if previous.isEmpty, let first = title.first {
+            notes[index].title = String(first).uppercased() + title.dropFirst()
+        } else {
+            notes[index].title = title
+        }
+        notes[index].updatedAt = Date()
+        saveNoteChanges(noteID: noteID)
     }
 
     private func scheduleNotionSync(for note: Note) {

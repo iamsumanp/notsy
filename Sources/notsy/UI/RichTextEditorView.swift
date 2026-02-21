@@ -10,8 +10,93 @@ class EditorScrollView: NSScrollView {
 }
 
 class CustomTextView: NSTextView {
+    static let editorFontSize: CGFloat = 15
+    private static let imageThumbnailWidth: CGFloat = 88
+    private var isNormalizingAttachments = false
+
+    private static func defaultParagraphStyle() -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 4
+        return style
+    }
+
+    private func normalizedTypingAttributes(base: [NSAttributedString.Key: Any]? = nil) -> [NSAttributedString.Key: Any] {
+        var attrs = base ?? typingAttributes
+        attrs[.foregroundColor] = NSColor.white
+        if attrs[.font] == nil {
+            attrs[.font] = NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
+        }
+        if attrs[.paragraphStyle] == nil {
+            attrs[.paragraphStyle] = Self.defaultParagraphStyle()
+        }
+        return attrs
+    }
+
+    private func applyPaste(text: String) {
+        let attrs = normalizedTypingAttributes()
+        let insertion = NSAttributedString(string: text, attributes: attrs)
+        textStorage?.replaceCharacters(in: selectedRange(), with: insertion)
+        let cursor = selectedRange().location + insertion.length
+        setSelectedRange(NSRange(location: cursor, length: 0))
+        typingAttributes = attrs
+        didChangeText()
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let pasted = NSPasteboard.general.string(forType: .string), !pasted.isEmpty else {
+            super.paste(sender)
+            return
+        }
+        applyPaste(text: pasted)
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) {
+        guard let pasted = NSPasteboard.general.string(forType: .string), !pasted.isEmpty else { return }
+        applyPaste(text: pasted)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "v" {
+            pasteAsPlainText(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Make list indent/outdent deterministic for Tab/Shift+Tab regardless of command routing.
+        if event.keyCode == 48, handleListTab(outdent: event.modifierFlags.contains(.shift)) {
+            return
+        }
+        // Backspace on nested list markers should outdent one level.
+        if event.keyCode == 51, handleListBackspace() {
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = self.convert(event.locationInWindow, from: nil)
+        let clickedIndex = self.characterIndexForInsertion(at: point)
+        if let ns = textStorage, clickedIndex >= 0, clickedIndex < ns.length,
+           let linkValue = ns.attribute(.link, at: clickedIndex, effectiveRange: nil) {
+            if let url = linkValue as? URL {
+                NSWorkspace.shared.open(url)
+                return
+            } else if let linkString = linkValue as? String, let url = URL(string: linkString) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
+
+        if let attachmentIndex = attachmentCharacterIndex(at: point), handleImageTap(at: attachmentIndex) {
+            // Keep insertion point out of oversized attachment line.
+            setSelectedRange(NSRange(location: min((string as NSString).length, attachmentIndex + 1), length: 0))
+            if let delegate = self.delegate as? RichTextEditorView.Coordinator { delegate.saveState() }
+            return
+        }
+
         let characterIndex = self.characterIndexForInsertion(at: point)
         
         let text = self.string as NSString
@@ -27,7 +112,7 @@ class CustomTextView: NSTextView {
                 if trimmed.hasPrefix("○ ") {
                     self.undoManager?.beginUndoGrouping()
                     let greenDot = NSAttributedString(string: "◉", attributes: [
-                        .font: NSFont.systemFont(ofSize: 15),
+                        .font: NSFont.systemFont(ofSize: Self.editorFontSize),
                         .foregroundColor: NSColor.systemGreen
                     ])
                     if let textStorage = self.textStorage {
@@ -45,7 +130,7 @@ class CustomTextView: NSTextView {
                 } else if trimmed.hasPrefix("◉ ") {
                     self.undoManager?.beginUndoGrouping()
                     let whiteCircle = NSAttributedString(string: "○", attributes: [
-                        .font: NSFont.systemFont(ofSize: 15),
+                        .font: NSFont.systemFont(ofSize: Self.editorFontSize),
                         .foregroundColor: NSColor.white
                     ])
                     if let textStorage = self.textStorage {
@@ -63,6 +148,200 @@ class CustomTextView: NSTextView {
             }
         }
         super.mouseDown(with: event)
+    }
+
+    override func didChangeText() {
+        normalizeImageAttachmentsIfNeeded()
+        refreshDetectedLinks()
+        super.didChangeText()
+    }
+
+    func refreshDetectedLinks() {
+        guard let textStorage else { return }
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.removeAttribute(.link, range: fullRange)
+
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return }
+        let text = textStorage.string
+        detector.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
+            guard let match, let url = match.url else { return }
+            textStorage.addAttribute(.link, value: url, range: match.range)
+        }
+    }
+
+    func normalizeImageAttachmentsIfNeeded() {
+        guard !isNormalizingAttachments else { return }
+        guard let textStorage else { return }
+        isNormalizingAttachments = true
+        defer { isNormalizingAttachments = false }
+
+        let wholeRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.enumerateAttribute(.attachment, in: wholeRange, options: []) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            self.applyImageSize(to: attachment, range: range, targetWidth: Self.imageThumbnailWidth, preserveExpanded: false)
+        }
+    }
+
+    private func handleImageTap(at characterIndex: Int) -> Bool {
+        guard let textStorage,
+              characterIndex >= 0,
+              characterIndex < textStorage.length,
+              let attachment = textStorage.attribute(.attachment, at: characterIndex, effectiveRange: nil) as? NSTextAttachment else {
+            return false
+        }
+
+        let image = attachment.image ?? decodedImage(from: attachment)
+        if let image {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotsyPreviewImage"),
+                object: nil,
+                userInfo: ["image": image]
+            )
+        }
+        return true
+    }
+
+    private func attachmentCharacterIndex(at pointInView: NSPoint) -> Int? {
+        guard let textStorage, textStorage.length > 0 else { return nil }
+        let insertionIndex = characterIndexForInsertion(at: pointInView)
+        let candidates = [insertionIndex, insertionIndex - 1, insertionIndex + 1]
+            .filter { $0 >= 0 && $0 < textStorage.length }
+
+        for idx in candidates {
+            guard textStorage.attribute(.attachment, at: idx, effectiveRange: nil) is NSTextAttachment else { continue }
+            if let rect = attachmentRect(for: idx),
+               rect.insetBy(dx: -6, dy: -6).contains(pointInView) {
+                return idx
+            }
+        }
+        return nil
+    }
+
+    private func attachmentRect(for characterIndex: Int) -> NSRect? {
+        guard let layoutManager, let textContainer else { return nil }
+        let charRange = NSRange(location: characterIndex, length: 1)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += textContainerInset.width
+        rect.origin.y += textContainerInset.height
+        return rect
+    }
+
+    private func applyImageSize(to attachment: NSTextAttachment, range: NSRange, targetWidth: CGFloat, preserveExpanded: Bool) {
+        let maxWidth = min(targetWidth, availableImageWidth())
+        guard maxWidth > 0 else { return }
+
+        if preserveExpanded, attachment.bounds.width > Self.imageThumbnailWidth + 2 {
+            return
+        }
+
+        if attachment.image == nil, let decoded = decodedImage(from: attachment) {
+            attachment.image = decoded
+        }
+
+        let imageSize = attachment.image?.size ?? attachment.attachmentCell?.cellSize() ?? .zero
+        guard imageSize.width > 0, imageSize.height > 0 else { return }
+
+        let scale = min(1.0, maxWidth / imageSize.width)
+        let newSize = NSSize(width: floor(imageSize.width * scale), height: floor(imageSize.height * scale))
+        attachment.bounds = NSRect(origin: .zero, size: newSize)
+
+        // Refresh layout for the single attachment run.
+        textStorage?.edited([.editedAttributes], range: range, changeInLength: 0)
+    }
+
+    private func availableImageWidth() -> CGFloat {
+        let inset = textContainerInset.width * 2
+        return max(120, bounds.width - inset - 24)
+    }
+
+    private func decodedImage(from attachment: NSTextAttachment) -> NSImage? {
+        if let data = attachment.fileWrapper?.regularFileContents {
+            return NSImage(data: data)
+        }
+        return nil
+    }
+
+    private func handleListTab(outdent: Bool) -> Bool {
+        let selected = selectedRange()
+        guard selected.length == 0 else { return false }
+
+        let ns = string as NSString
+        guard ns.length > 0 else { return false }
+        let probeLocation = max(0, min(selected.location, ns.length) - 1)
+        let lineRange = ns.lineRange(for: NSRange(location: probeLocation, length: 0))
+        let lineString = ns.substring(with: lineRange)
+        let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
+        guard leadingStripped.hasPrefix("•") || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
+
+        if outdent {
+            if lineString.hasPrefix("\t") {
+                insertText("", replacementRange: NSRange(location: lineRange.location, length: 1))
+            } else if lineString.hasPrefix("    ") {
+                insertText("", replacementRange: NSRange(location: lineRange.location, length: 4))
+            } else {
+                return false
+            }
+        } else {
+            insertText("\t", replacementRange: NSRange(location: lineRange.location, length: 0))
+        }
+
+        if let delegate = self.delegate as? RichTextEditorView.Coordinator {
+            delegate.saveState()
+        }
+        return true
+    }
+
+    private func handleListBackspace() -> Bool {
+        let selected = selectedRange()
+        guard selected.length == 0 else { return false }
+
+        let ns = string as NSString
+        guard ns.length > 0 else { return false }
+        let probeLocation = max(0, min(selected.location, ns.length) - 1)
+        let lineRange = ns.lineRange(for: NSRange(location: probeLocation, length: 0))
+        let lineString = ns.substring(with: lineRange)
+        let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
+        let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
+
+        guard !leadingWhitespace.isEmpty else { return false }
+        guard leadingStripped.hasPrefix("•") || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
+
+        let markerStart = lineRange.location + leadingWhitespace.utf16.count
+        let markerEnd = markerStart + 2
+        let cursor = selected.location
+        if cursor > markerEnd { return false }
+
+        let outdentLength: Int
+        if leadingWhitespace.hasSuffix("\t") {
+            outdentLength = 1
+        } else if leadingWhitespace.hasSuffix("    ") {
+            outdentLength = 4
+        } else {
+            outdentLength = 1
+        }
+        insertText("", replacementRange: NSRange(location: markerStart - outdentLength, length: outdentLength))
+        if let delegate = self.delegate as? RichTextEditorView.Coordinator {
+            delegate.saveState()
+        }
+        return true
+    }
+
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        var caretRect = rect
+        caretRect.size.width = 1
+
+        let font = (typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: Self.editorFontSize)
+        let normalHeight = ceil(font.ascender - font.descender + font.leading)
+
+        // When cursor sits on an attachment line, AppKit can report a very tall caret rect.
+        // Clamp it to a normal text line height so typing next to images feels natural.
+        if caretRect.height > normalHeight * 1.8 {
+            caretRect.origin.y = caretRect.maxY - normalHeight - 2
+            caretRect.size.height = normalHeight
+        }
+
+        super.drawInsertionPoint(in: caretRect, color: color, turnedOn: flag)
     }
 }
 
@@ -94,7 +373,7 @@ struct RichTextEditorView: NSViewRepresentable {
         let defaultStyle = NSMutableParagraphStyle()
         defaultStyle.lineSpacing = 4
         textView.typingAttributes = [
-            .font: NSFont.systemFont(ofSize: 15), 
+            .font: NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular),
             .foregroundColor: NSColor.white,
             .paragraphStyle: defaultStyle
         ]
@@ -109,6 +388,8 @@ struct RichTextEditorView: NSViewRepresentable {
         context.coordinator.textView = textView
         textView.delegate = context.coordinator
         textView.textStorage?.setAttributedString(note.stringRepresentation)
+        textView.refreshDetectedLinks()
+        textView.normalizeImageAttachmentsIfNeeded()
         context.coordinator.currentNoteID = note.id
 
         return scrollView
@@ -125,6 +406,10 @@ struct RichTextEditorView: NSViewRepresentable {
             context.coordinator.currentNoteID = note.id
 
             textView.textStorage?.setAttributedString(note.stringRepresentation)
+            if let customTextView = textView as? CustomTextView {
+                customTextView.refreshDetectedLinks()
+                customTextView.normalizeImageAttachmentsIfNeeded()
+            }
 
             let length = textView.textStorage?.length ?? 0
             textView.setSelectedRange(NSRange(location: length, length: 0))
@@ -180,11 +465,93 @@ struct RichTextEditorView: NSViewRepresentable {
             } else if action == "underline" {
                 textView.underline(nil)
                 saveState()
+            } else if action == "strikethrough" {
+                toggleStrikethrough()
             } else if action == "list" {
                 toggleList(isCheckbox: false)
             } else if action == "checkbox" {
                 toggleList(isCheckbox: true)
+            } else if action == "font-sans" {
+                applyFontStyle(.sans)
+            } else if action == "font-serif" {
+                applyFontStyle(.serif)
+            } else if action == "font-mono" {
+                applyFontStyle(.mono)
+            } else if action == "color-white" {
+                applyTextColor(.white)
+            } else if action == "color-yellow" {
+                applyTextColor(.systemYellow)
+            } else if action == "color-blue" {
+                applyTextColor(.systemBlue)
+            } else if action == "color-green" {
+                applyTextColor(.systemGreen)
+            } else if action == "color-custom" {
+                if let color = notification.userInfo?["nsColor"] as? NSColor {
+                    applyTextColor(color)
+                }
             }
+        }
+
+        private func applyTextColor(_ color: NSColor) {
+            guard let textView = self.textView else { return }
+            let selected = textView.selectedRange()
+            if selected.length > 0 {
+                textView.textStorage?.addAttribute(.foregroundColor, value: color, range: selected)
+            }
+            textView.typingAttributes[.foregroundColor] = color
+            saveState()
+        }
+
+        private func toggleStrikethrough() {
+            guard let textView = self.textView else { return }
+            let selected = textView.selectedRange()
+            let current = (textView.typingAttributes[.strikethroughStyle] as? Int ?? 0) > 0
+            let newValue = current ? 0 : NSUnderlineStyle.single.rawValue
+
+            if selected.length > 0 {
+                textView.textStorage?.addAttribute(.strikethroughStyle, value: newValue, range: selected)
+            }
+            textView.typingAttributes[.strikethroughStyle] = newValue
+            saveState()
+        }
+
+        private func applyFontStyle(_ style: EditorFontStyle) {
+            guard let textView = self.textView else { return }
+            let selected = textView.selectedRange()
+
+            if selected.length > 0, let textStorage = textView.textStorage {
+                textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                    let current = (value as? NSFont) ?? (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                    textStorage.addAttribute(.font, value: self.font(for: style, basedOn: current), range: range)
+                }
+            } else {
+                let current = (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                textView.typingAttributes[.font] = font(for: style, basedOn: current)
+            }
+            saveState()
+        }
+
+        private func font(for style: EditorFontStyle, basedOn current: NSFont) -> NSFont {
+            let size = current.pointSize
+            let traits = current.fontDescriptor.symbolicTraits
+            let base: NSFont
+            switch style {
+            case .sans:
+                base = NSFont.systemFont(ofSize: size)
+            case .serif:
+                base = NSFont(name: "Times New Roman", size: size) ?? NSFont.systemFont(ofSize: size)
+            case .mono:
+                base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            }
+
+            var updated = base
+            if traits.contains(.bold), let bold = NSFontManager.shared.convert(updated, toHaveTrait: .boldFontMask) as NSFont? {
+                updated = bold
+            }
+            if traits.contains(.italic), let italic = NSFontManager.shared.convert(updated, toHaveTrait: .italicFontMask) as NSFont? {
+                updated = italic
+            }
+            return updated
         }
         
         func saveState() {
@@ -247,8 +614,10 @@ struct RichTextEditorView: NSViewRepresentable {
                 }
             }
             
-            // Force reset typing attributes so typing continues as white
-            textView.typingAttributes[.foregroundColor] = NSColor.white
+            // Prevent checkbox marker green from becoming typing color.
+            if let fgColor = textView.typingAttributes[.foregroundColor] as? NSColor, fgColor == NSColor.systemGreen {
+                textView.typingAttributes[.foregroundColor] = NSColor.white
+            }
             
             textView.undoManager?.endUndoGrouping()
             saveState()
@@ -256,8 +625,25 @@ struct RichTextEditorView: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard !isUpdating, let textView = notification.object as? NSTextView else { return }
+            // Prevent checked-checkbox green from leaking into newly typed text.
+            if let fgColor = textView.typingAttributes[.foregroundColor] as? NSColor, fgColor == NSColor.systemGreen {
+                textView.typingAttributes[.foregroundColor] = NSColor.white
+            }
             parent.note.update(with: textView.attributedString())
-            parent.store.saveNoteChanges(noteID: parent.note.id)
+            var didAutoUpdateTitle = false
+            if parent.note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let firstLine = parent.note.plainTextCache
+                    .split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first(where: { !$0.isEmpty }) ?? ""
+                if !firstLine.isEmpty {
+                    parent.store.updateTitle(noteID: parent.note.id, title: String(firstLine.prefix(120)))
+                    didAutoUpdateTitle = true
+                }
+            }
+            if !didAutoUpdateTitle {
+                parent.store.saveNoteChanges(noteID: parent.note.id)
+            }
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -281,16 +667,28 @@ struct RichTextEditorView: NSViewRepresentable {
             var isBold = false
             var isItalic = false
             var isUnderline = false
+            var isStrikethrough = false
             var isBullet = false
             var isCheckbox = false
+            var fontStyle: EditorFontStyle = .mono
             
             if let font = attrs[.font] as? NSFont {
                 let traits = font.fontDescriptor.symbolicTraits
                 isBold = traits.contains(.bold)
                 isItalic = traits.contains(.italic)
+                if traits.contains(.monoSpace) || font.fontName.lowercased().contains("mono") || font.fontName.lowercased().contains("menlo") {
+                    fontStyle = .mono
+                } else if font.familyName?.lowercased().contains("times") == true || font.fontName.lowercased().contains("serif") {
+                    fontStyle = .serif
+                } else {
+                    fontStyle = .sans
+                }
             }
             if let underlineStyle = attrs[.underlineStyle] as? Int, underlineStyle > 0 {
                 isUnderline = true
+            }
+            if let strikeStyle = attrs[.strikethroughStyle] as? Int, strikeStyle > 0 {
+                isStrikethrough = true
             }
             
             let text = textView.string as NSString
@@ -299,12 +697,13 @@ struct RichTextEditorView: NSViewRepresentable {
             if text.length > 0 {
                 let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
                 let lineString = text.substring(with: lineRange)
-                if lineString.hasPrefix("• ") { isBullet = true }
-                else if lineString.hasPrefix("○ ") || lineString.hasPrefix("◉ ") { isCheckbox = true }
+                let trimmed = lineString.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("• ") { isBullet = true }
+                else if trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") { isCheckbox = true }
             }
             
             DispatchQueue.main.async {
-                let newState = EditorState(isBold: isBold, isItalic: isItalic, isUnderline: isUnderline, isBullet: isBullet, isCheckbox: isCheckbox)
+                let newState = EditorState(isBold: isBold, isItalic: isItalic, isUnderline: isUnderline, isStrikethrough: isStrikethrough, isBullet: isBullet, isCheckbox: isCheckbox, fontStyle: fontStyle)
                 if self.parent.editorState != newState {
                     self.parent.editorState = newState
                 }
@@ -314,7 +713,31 @@ struct RichTextEditorView: NSViewRepresentable {
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             guard let replacement = replacementString else { return true }
 
-            // Intercept Markdown "- " and turn it into "• " natively
+            // Space near list marker indents list item one level (Notion-style).
+            if replacement == " " {
+                let text = textView.string as NSString
+                let lineRange = text.lineRange(for: NSRange(location: affectedCharRange.location, length: 0))
+                let lineString = text.substring(with: lineRange)
+                let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
+                let markerColumn = leadingWhitespace.count
+                let chars = Array(lineString)
+                if chars.count >= markerColumn + 2 {
+                    let marker = chars[markerColumn]
+                    let markerSpacer = chars[markerColumn + 1]
+                    let isListMarker = (marker == "•" || marker == "○" || marker == "◉") && markerSpacer == " "
+                    if isListMarker {
+                        let markerStart = lineRange.location + leadingWhitespace.utf16.count
+                        let markerEnd = markerStart + 2
+                        if affectedCharRange.location <= markerEnd {
+                            textView.insertText("\t", replacementRange: NSRange(location: lineRange.location, length: 0))
+                            saveState()
+                            return false
+                        }
+                    }
+                }
+            }
+
+            // Intercept Markdown "- " at start/indent and convert into "• " synchronously.
             if replacement == " " {
                 let text = textView.string as NSString
                 if affectedCharRange.location > 0 {
@@ -323,13 +746,14 @@ struct RichTextEditorView: NSViewRepresentable {
 
                     if prevChar == "-" {
                         let lineRange = text.lineRange(for: NSRange(location: affectedCharRange.location, length: 0))
-                        if lineRange.location == prevCharIndex {
-                            DispatchQueue.main.async { 
-                                textView.undoManager?.beginUndoGrouping()
-                                textView.insertText("•", replacementRange: NSRange(location: prevCharIndex, length: 1))
-                                textView.undoManager?.endUndoGrouping()
-                                self.saveState()
-                            }
+                        let prefixRange = NSRange(location: lineRange.location, length: max(0, prevCharIndex - lineRange.location))
+                        let prefix = text.substring(with: prefixRange)
+                        let isIndentedStart = prefix.allSatisfy { $0 == " " || $0 == "\t" }
+                        if lineRange.location == prevCharIndex || isIndentedStart {
+                            textView.undoManager?.beginUndoGrouping()
+                            textView.insertText("• ", replacementRange: NSRange(location: prevCharIndex, length: 1))
+                            textView.undoManager?.endUndoGrouping()
+                            saveState()
                             return false
                         }
                     }
@@ -341,7 +765,9 @@ struct RichTextEditorView: NSViewRepresentable {
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) { return handleEnter(textView) }
             else if commandSelector == #selector(NSResponder.insertTab(_:)) { return handleTab(textView) }
+            else if commandSelector == #selector(NSResponder.insertTabIgnoringFieldEditor(_:)) { return handleTab(textView) }
             else if commandSelector == #selector(NSResponder.insertBacktab(_:)) { return handleShiftTab(textView) }
+            else if commandSelector == #selector(NSResponder.deleteBackward(_:)) { return handleBackspace(textView) }
             return false
         }
 
@@ -350,7 +776,7 @@ struct RichTextEditorView: NSViewRepresentable {
             let text = textView.string as NSString
             if text.length == 0 { return false }
             
-            let lineRange = text.lineRange(for: NSRange(location: max(0, selectedRange.location - 1), length: 0))
+            let lineRange = text.lineRange(for: NSRange(location: selectedRange.location, length: 0))
             let lineString = text.substring(with: lineRange)
             
             // Extract any leading whitespace (tabs or spaces) for sub-bullets
@@ -414,11 +840,14 @@ struct RichTextEditorView: NSViewRepresentable {
         private func handleTab(_ textView: NSTextView) -> Bool {
             let text = textView.string as NSString
             let selectedRange = textView.selectedRange()
-            let lineRange = text.lineRange(for: NSRange(location: selectedRange.location, length: 0))
+            let probeLocation = max(0, min(selectedRange.location, text.length) - 1)
+            let lineRange = text.lineRange(for: NSRange(location: probeLocation, length: 0))
             let lineString = text.substring(with: lineRange)
+            let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
             
-            if lineString.hasPrefix("• ") || lineString.hasPrefix("[ ] ") || lineString.hasPrefix("[x] ") {
+            if leadingStripped.hasPrefix("•") || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") {
                 textView.insertText("\t", replacementRange: NSRange(location: lineRange.location, length: 0))
+                saveState()
                 return true
             }
             return false
@@ -430,10 +859,46 @@ struct RichTextEditorView: NSViewRepresentable {
             let lineRange = text.lineRange(for: NSRange(location: selectedRange.location, length: 0))
             let lineString = text.substring(with: lineRange)
             
-            if lineString.hasPrefix("\t") {
-                textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: 1))
+            if lineString.hasPrefix("\t") || lineString.hasPrefix("    ") {
+                let outdentLength = lineString.hasPrefix("\t") ? 1 : 4
+                textView.insertText("", replacementRange: NSRange(location: lineRange.location, length: outdentLength))
+                saveState()
                 return true
             }
+            return false
+        }
+
+        private func handleBackspace(_ textView: NSTextView) -> Bool {
+            let selectedRange = textView.selectedRange()
+            guard selectedRange.length == 0 else { return false }
+
+            let text = textView.string as NSString
+            guard text.length > 0 else { return false }
+
+            let cursor = selectedRange.location
+            let lineRange = text.lineRange(for: NSRange(location: cursor, length: 0))
+            let lineString = text.substring(with: lineRange)
+            let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
+            let trimmed = lineString.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("• ") || trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") else { return false }
+
+            let markerStart = lineRange.location + leadingWhitespace.utf16.count
+            let contentStart = markerStart + 2
+
+            if cursor == contentStart && !leadingWhitespace.isEmpty {
+                let outdentLength: Int
+                if leadingWhitespace.hasSuffix("\t") {
+                    outdentLength = 1
+                } else if leadingWhitespace.hasSuffix("    ") {
+                    outdentLength = 4
+                } else {
+                    outdentLength = 1
+                }
+                textView.insertText("", replacementRange: NSRange(location: markerStart - outdentLength, length: outdentLength))
+                saveState()
+                return true
+            }
+
             return false
         }
     }

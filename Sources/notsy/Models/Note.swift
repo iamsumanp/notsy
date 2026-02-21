@@ -38,22 +38,37 @@ class Note: Identifiable, Codable, Equatable, Hashable {
 
     var stringRepresentation: NSAttributedString {
         guard !attributedContent.isEmpty else { return NSAttributedString(string: plainTextCache) }
-        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+        // Prefer RTFD for embedded media (images), with RTF fallback for older notes.
+        let rtfdOptions: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.rtfd
+        ]
+        if let attrStr = try? NSAttributedString(data: attributedContent, options: rtfdOptions, documentAttributes: nil) {
+            return attrStr
+        }
+
+        let rtfOptions: [NSAttributedString.DocumentReadingOptionKey: Any] = [
             .documentType: NSAttributedString.DocumentType.rtf
         ]
-        if let attrStr = try? NSAttributedString(data: attributedContent, options: options, documentAttributes: nil) {
+        if let attrStr = try? NSAttributedString(data: attributedContent, options: rtfOptions, documentAttributes: nil) {
             return attrStr
         }
         return NSAttributedString(string: plainTextCache)
     }
 
     func update(with attributedString: NSAttributedString) {
-        let options: [NSAttributedString.DocumentAttributeKey: Any] = [
-            .documentType: NSAttributedString.DocumentType.rtf
-        ]
         let range = NSRange(location: 0, length: attributedString.length)
-        if let rtfData = try? attributedString.data(from: range, documentAttributes: options) {
-            self.attributedContent = rtfData
+        let rtfdOptions: [NSAttributedString.DocumentAttributeKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.rtfd
+        ]
+        if let rtfdData = try? attributedString.data(from: range, documentAttributes: rtfdOptions) {
+            self.attributedContent = rtfdData
+        } else {
+            let rtfOptions: [NSAttributedString.DocumentAttributeKey: Any] = [
+                .documentType: NSAttributedString.DocumentType.rtf
+            ]
+            if let rtfData = try? attributedString.data(from: range, documentAttributes: rtfOptions) {
+                self.attributedContent = rtfData
+            }
         }
         self.plainTextCache = attributedString.string
         self.updatedAt = Date()

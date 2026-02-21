@@ -44,7 +44,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.isMovableByWindowBackground = true
+        // Keep window dragging constrained to the titlebar strip, not the full content area.
+        panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = true
         panel.backgroundColor = .clear
@@ -66,13 +67,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button {
             button.image = NSImage(
                 systemSymbolName: "note.text", accessibilityDescription: "Notsy")
+            button.target = self
             button.action = #selector(statusBarButtonClicked(sender:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
     }
 
     @objc private func statusBarButtonClicked(sender: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent else { return }
+        guard let event = NSApp.currentEvent else {
+            toggleWindow()
+            return
+        }
 
         if event.type == .rightMouseUp {
             showContextMenu()
