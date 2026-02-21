@@ -11,13 +11,9 @@ struct PreferencesView: View {
     @State private var keyMonitor: Any?
     @State private var notionSyncEnabled: Bool
     @State private var notionDatabaseID: String
-    @State private var notionClientID: String
-    @State private var notionClientSecret: String
-    @State private var notionRedirectURI: String
-    @State private var notionAuthCode: String
-    @State private var notionOAuthState: String
+    @State private var notionIntegrationSecret: String
     @State private var notionMessage: String?
-    @State private var isAwaitingOAuthCallback = false
+    @State private var isTestingNotionConnection = false
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
 
@@ -28,14 +24,10 @@ struct PreferencesView: View {
         _modifiers = State(initialValue: shortcut.modifiers)
         _notionSyncEnabled = State(initialValue: defaults.bool(forKey: NotionSyncService.enabledDefaultsKey))
         _notionDatabaseID = State(initialValue: defaults.string(forKey: NotionSyncService.databaseIDDefaultsKey) ?? "")
-        _notionClientID = State(initialValue: defaults.string(forKey: NotionSyncService.oauthClientIDDefaultsKey) ?? "")
-        _notionClientSecret = State(initialValue: KeychainHelper.load(
+        _notionIntegrationSecret = State(initialValue: KeychainHelper.load(
             service: NotionSyncService.keychainService,
-            account: NotionSyncService.oauthClientSecretKeychainAccount
+            account: NotionSyncService.legacyTokenKeychainAccount
         ) ?? "")
-        _notionRedirectURI = State(initialValue: defaults.string(forKey: NotionSyncService.oauthRedirectURIDefaultsKey) ?? "")
-        _notionAuthCode = State(initialValue: "")
-        _notionOAuthState = State(initialValue: UUID().uuidString)
     }
 
     private var currentHotkeyDisplay: String {
@@ -153,155 +145,46 @@ struct PreferencesView: View {
 
     private func saveNotionSettings() {
         let trimmedDatabaseID = notionDatabaseID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedClientID = notionClientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedClientSecret = notionClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedRedirectURI = notionRedirectURI.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedIntegrationSecret = notionIntegrationSecret.trimmingCharacters(in: .whitespacesAndNewlines)
 
         UserDefaults.standard.set(notionSyncEnabled, forKey: NotionSyncService.enabledDefaultsKey)
         UserDefaults.standard.set(trimmedDatabaseID, forKey: NotionSyncService.databaseIDDefaultsKey)
-        UserDefaults.standard.set(trimmedClientID, forKey: NotionSyncService.oauthClientIDDefaultsKey)
-        UserDefaults.standard.set(trimmedRedirectURI, forKey: NotionSyncService.oauthRedirectURIDefaultsKey)
 
-        if !trimmedClientSecret.isEmpty {
+        if !trimmedIntegrationSecret.isEmpty {
             guard KeychainHelper.save(
                 service: NotionSyncService.keychainService,
-                account: NotionSyncService.oauthClientSecretKeychainAccount,
-                value: trimmedClientSecret
+                account: NotionSyncService.legacyTokenKeychainAccount,
+                value: trimmedIntegrationSecret
             ) else {
-                notionMessage = "Failed to save OAuth client secret in Keychain."
+                notionMessage = "Failed to save Notion integration secret in Keychain."
                 return
             }
         }
 
         if notionSyncEnabled {
-            notionMessage = (trimmedDatabaseID.isEmpty || trimmedClientID.isEmpty || trimmedRedirectURI.isEmpty)
-                ? "Saved. Configure OAuth and exchange a code before sync can run."
-                : "OAuth settings saved. Complete Connect + Exchange Code."
+            notionMessage = (trimmedDatabaseID.isEmpty || trimmedIntegrationSecret.isEmpty)
+                ? "Saved. Add Database ID and Integration Secret before sync can run."
+                : "Notion sync settings saved."
         } else {
             notionMessage = "Notion settings saved."
         }
     }
 
-    private func openNotionOAuth() {
-        let trimmedClientID = notionClientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedRedirectURI = notionRedirectURI.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedClientID.isEmpty, !trimmedRedirectURI.isEmpty else {
-            notionMessage = "Add OAuth Client ID and Redirect URI first."
-            return
-        }
+    private func testNotionConnection() {
+        let trimmedDatabaseID = notionDatabaseID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedIntegrationSecret = notionIntegrationSecret.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        notionOAuthState = UUID().uuidString
+        isTestingNotionConnection = true
+        notionMessage = "Testing Notion connection..."
+
         Task {
-            let url = await NotionSyncService.shared.buildOAuthAuthorizationURL(
-                clientID: trimmedClientID,
-                redirectURI: trimmedRedirectURI,
-                state: notionOAuthState
+            let result = await NotionSyncService.shared.testConnection(
+                databaseID: trimmedDatabaseID,
+                token: trimmedIntegrationSecret
             )
             await MainActor.run {
-                guard let url else {
-                    notionMessage = "Failed to build OAuth URL."
-                    return
-                }
-                NSWorkspace.shared.open(url)
-                notionMessage = "Browser opened. Approve access, then paste the returned code below."
-            }
-        }
-    }
-
-    private func exchangeNotionCode() {
-        let trimmedClientID = notionClientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedClientSecret = notionClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedRedirectURI = notionRedirectURI.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedCode = notionAuthCode.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedClientID.isEmpty, !trimmedClientSecret.isEmpty, !trimmedRedirectURI.isEmpty, !trimmedCode.isEmpty else {
-            notionMessage = "Fill Client ID, Client Secret, Redirect URI, and Authorization Code."
-            return
-        }
-
-        notionMessage = "Exchanging code for access token..."
-        Task {
-            do {
-                try await NotionSyncService.shared.exchangeOAuthCode(
-                    clientID: trimmedClientID,
-                    clientSecret: trimmedClientSecret,
-                    redirectURI: trimmedRedirectURI,
-                    code: trimmedCode
-                )
-                await MainActor.run {
-                    notionAuthCode = ""
-                    notionMessage = "OAuth connected. Notes can now sync to Notion."
-                }
-            } catch {
-                await MainActor.run {
-                    notionMessage = "OAuth exchange failed: \(error)"
-                }
-            }
-        }
-    }
-
-    private func connectNotionWithLocalhostCallback() {
-        let trimmedClientID = notionClientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedClientSecret = notionClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-        let callbackURI = "http://127.0.0.1:53682/notion/oauth/callback"
-
-        guard !trimmedClientID.isEmpty, !trimmedClientSecret.isEmpty else {
-            notionMessage = "Fill OAuth Client ID and Client Secret first."
-            return
-        }
-
-        notionRedirectURI = callbackURI
-        saveNotionSettings()
-        notionOAuthState = UUID().uuidString
-        isAwaitingOAuthCallback = true
-        notionMessage = "Opening browser and waiting for Notion callback..."
-
-        Task {
-            do {
-                let state = notionOAuthState
-                guard let authURL = await NotionSyncService.shared.buildOAuthAuthorizationURL(
-                    clientID: trimmedClientID,
-                    redirectURI: callbackURI,
-                    state: state
-                ) else {
-                    await MainActor.run {
-                        notionMessage = "Failed to build OAuth URL."
-                        isAwaitingOAuthCallback = false
-                    }
-                    return
-                }
-
-                async let callback = LocalOAuthCallbackServer.shared.waitForCode(
-                    port: 53682,
-                    expectedPath: "/notion/oauth/callback"
-                )
-
-                await MainActor.run {
-                    _ = NSWorkspace.shared.open(authURL)
-                }
-
-                let result = try await callback
-                if let callbackState = result.state, callbackState != state {
-                    throw LocalOAuthCallbackError.stateMismatch
-                }
-
-                try await NotionSyncService.shared.exchangeOAuthCode(
-                    clientID: trimmedClientID,
-                    clientSecret: trimmedClientSecret,
-                    redirectURI: callbackURI,
-                    code: result.code
-                )
-
-                await MainActor.run {
-                    notionAuthCode = ""
-                    notionMessage = "OAuth connected via localhost callback."
-                    isAwaitingOAuthCallback = false
-                }
-            } catch {
-                await MainActor.run {
-                    notionMessage = "Auto OAuth failed: \(error)"
-                    isAwaitingOAuthCallback = false
-                }
+                notionMessage = result.message
+                isTestingNotionConnection = false
             }
         }
     }
@@ -354,51 +237,28 @@ struct PreferencesView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("OAuth Client ID")
+                        Text("Integration Secret")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        TextField("30dd....", text: $notionClientID)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("OAuth Client Secret")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        SecureField("secret_xxx...", text: $notionClientSecret)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("OAuth Redirect URI")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        TextField("https://yourapp.example/callback", text: $notionRedirectURI)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Authorization Code")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        TextField("Paste code=... value from redirect URL", text: $notionAuthCode)
+                        SecureField("ntn_... or secret_...", text: $notionIntegrationSecret)
                     }
 
                     HStack {
                         Button("Save Settings") {
                             saveNotionSettings()
                         }
-                        Button(isAwaitingOAuthCallback ? "Waiting for callback..." : "Connect (Auto Callback)") {
-                            connectNotionWithLocalhostCallback()
+                        Button(isTestingNotionConnection ? "Testing..." : "Test Notion Connection") {
+                            testNotionConnection()
                         }
-                        .disabled(isAwaitingOAuthCallback)
-                        Button("Connect in Browser") {
-                            openNotionOAuth()
-                        }
-                        Button("Exchange Code") {
-                            exchangeNotionCode()
-                        }
-                        Text("Client secret/token stored in macOS Keychain.")
+                        .disabled(isTestingNotionConnection)
+                        Text("Integration secret is stored in macOS Keychain.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+
+                    Text("In Notion, share the target database with this integration from the database page's Connections menu.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
 
                     if let notionMessage {
                         Text(notionMessage)
@@ -466,7 +326,6 @@ struct PreferencesView: View {
         }
         .onDisappear {
             removeKeyMonitor()
-            LocalOAuthCallbackServer.shared.stop()
         }
         .frame(width: 480, height: 560)
     }

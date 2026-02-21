@@ -309,6 +309,27 @@ struct MainPanel: View {
                         .padding(.leading, 10)
                     }
                 }
+                .overlay(alignment: .bottomTrailing) {
+                    if let notionMessage = store.notionSyncStatusMessage {
+                        HStack(spacing: 8) {
+                            Image(systemName: store.notionSyncInFlight ? "arrow.triangle.2.circlepath" : (store.notionSyncStatusIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(store.notionSyncStatusIsError ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
+                            Text(notionMessage)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .font(.system(size: 11))
+                                .foregroundColor(store.notionSyncStatusIsError ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Theme.sidebarBg.opacity(0.78))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.border.opacity(0.7), lineWidth: 0.6))
+                        .cornerRadius(6)
+                        .padding(.trailing, 12)
+                        .padding(.bottom, 10)
+                    }
+                }
             }
             
             Divider().background(Theme.border)

@@ -27,6 +27,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard store.hasPendingNotionSync else { return .terminateNow }
+
+        Task {
+            _ = await store.flushPendingNotionSync()
+            await MainActor.run {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+
     private func setupPanel() {
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),

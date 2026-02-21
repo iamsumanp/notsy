@@ -6,6 +6,38 @@ struct NotionNoteSnapshot {
     let plainText: String
 }
 
+enum NotionNoteSyncResult {
+    case synced
+    case skipped
+    case failed(String)
+}
+
+enum NotionConnectionCheckResult {
+    case success
+    case missingToken
+    case invalidToken(String)
+    case invalidDatabaseIDFormat
+    case databaseNotAccessible(String)
+    case unknownError(String)
+
+    var message: String {
+        switch self {
+        case .success:
+            return "Connection successful. Token is valid and database is reachable."
+        case .missingToken:
+            return "Add an integration secret first."
+        case .invalidToken(let reason):
+            return "Invalid integration secret: \(reason)"
+        case .invalidDatabaseIDFormat:
+            return "Database ID format is invalid. Use a 32-character hex ID from the database URL."
+        case .databaseNotAccessible(let reason):
+            return "Token is valid, but the database is not accessible: \(reason)"
+        case .unknownError(let reason):
+            return "Connection test failed: \(reason)"
+        }
+    }
+}
+
 actor NotionSyncService {
     static let shared = NotionSyncService()
 
@@ -33,8 +65,8 @@ actor NotionSyncService {
         self.pageMap = Self.loadPageMap(from: pageMapURL)
     }
 
-    func sync(note: NotionNoteSnapshot) async {
-        guard let config = loadConfig(), config.enabled else { return }
+    func sync(note: NotionNoteSnapshot) async -> NotionNoteSyncResult {
+        guard let config = loadConfig(), config.enabled else { return .skipped }
 
         do {
             let pageID = try await upsertPage(for: note, config: config)
@@ -42,9 +74,66 @@ actor NotionSyncService {
                 pageMap[note.id.uuidString] = pageID
                 savePageMap()
             }
+            return .synced
         } catch {
             // Keep local note edits resilient even when Notion is unavailable.
             print("Notion sync failed for note \(note.id): \(error)")
+            return .failed(String(describing: error))
+        }
+    }
+
+    func testConnection(databaseID: String, token: String) async -> NotionConnectionCheckResult {
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedDatabaseID = databaseID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "")
+
+        guard !trimmedToken.isEmpty else {
+            return .missingToken
+        }
+        guard Self.isValidDatabaseID(normalizedDatabaseID) else {
+            return .invalidDatabaseIDFormat
+        }
+
+        do {
+            _ = try await request(
+                method: "GET",
+                path: "/v1/users/me",
+                token: trimmedToken,
+                body: nil
+            )
+        } catch let error as NotionSyncError {
+            switch error {
+            case .http(let message):
+                return .invalidToken(message)
+            case .invalidResponse(let message):
+                return .unknownError(message)
+            case .invalidURL:
+                return .unknownError("Invalid Notion API URL")
+            }
+        } catch {
+            return .unknownError(error.localizedDescription)
+        }
+
+        do {
+            _ = try await request(
+                method: "GET",
+                path: "/v1/databases/\(normalizedDatabaseID)",
+                token: trimmedToken,
+                body: nil
+            )
+            return .success
+        } catch let error as NotionSyncError {
+            switch error {
+            case .http(let message):
+                return .databaseNotAccessible(message)
+            case .invalidResponse(let message):
+                return .unknownError(message)
+            case .invalidURL:
+                return .unknownError("Invalid Notion API URL")
+            }
+        } catch {
+            return .unknownError(error.localizedDescription)
         }
     }
 
@@ -340,6 +429,18 @@ actor NotionSyncService {
     private func savePageMap() {
         guard let encoded = try? JSONEncoder().encode(pageMap) else { return }
         try? encoded.write(to: pageMapURL)
+    }
+
+    private static func isValidDatabaseID(_ value: String) -> Bool {
+        guard value.count == 32 else { return false }
+        return value.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 48...57, 65...70, 97...102:
+                return true
+            default:
+                return false
+            }
+        }
     }
 }
 

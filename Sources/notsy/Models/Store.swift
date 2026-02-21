@@ -4,9 +4,14 @@ import SwiftUI
 @Observable
 final class NoteStore {
     var notes: [Note] = []
+    var notionSyncStatusMessage: String?
+    var notionSyncStatusIsError: Bool = false
+    var notionSyncInFlight: Bool = false
 
     private let saveURL: URL
     private var syncTasks: [UUID: Task<Void, Never>] = [:]
+    private var clearNotionStatusTask: Task<Void, Never>?
+    var hasPendingNotionSync: Bool { !syncTasks.isEmpty || notionSyncInFlight }
 
     init() {
         let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -106,7 +111,82 @@ final class NoteStore {
         syncTasks[note.id] = Task {
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             guard !Task.isCancelled else { return }
-            await NotionSyncService.shared.sync(note: snapshot)
+            await MainActor.run {
+                clearNotionStatusTask?.cancel()
+                notionSyncInFlight = true
+                notionSyncStatusIsError = false
+                notionSyncStatusMessage = "Syncing to Notion..."
+            }
+
+            let result = await NotionSyncService.shared.sync(note: snapshot)
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                notionSyncInFlight = false
+                syncTasks.removeValue(forKey: note.id)
+
+                switch result {
+                case .synced:
+                    notionSyncStatusIsError = false
+                    notionSyncStatusMessage = "Saved to Notion."
+                    clearNotionStatusTask?.cancel()
+                    clearNotionStatusTask = Task {
+                        try? await Task.sleep(nanoseconds: 2_500_000_000)
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            notionSyncStatusMessage = nil
+                        }
+                    }
+                case .skipped:
+                    notionSyncStatusIsError = false
+                    notionSyncStatusMessage = nil
+                case .failed(let message):
+                    notionSyncStatusIsError = true
+                    notionSyncStatusMessage = "Notion sync failed: \(message)"
+                }
+            }
         }
+    }
+
+    func flushPendingNotionSync(timeoutNanoseconds: UInt64 = 6_000_000_000) async -> Bool {
+        let tasksToWait = syncTasks.values.map { $0 }
+        guard !tasksToWait.isEmpty else { return true }
+
+        await MainActor.run {
+            clearNotionStatusTask?.cancel()
+            notionSyncInFlight = true
+            notionSyncStatusIsError = false
+            notionSyncStatusMessage = "Finalizing Notion sync before quit..."
+        }
+
+        let completed = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for task in tasksToWait {
+                    _ = await task.result
+                }
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return false
+            }
+
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+
+        await MainActor.run {
+            notionSyncInFlight = false
+            if completed {
+                notionSyncStatusIsError = false
+                notionSyncStatusMessage = "Saved to Notion."
+            } else {
+                notionSyncStatusIsError = true
+                notionSyncStatusMessage = "Quit before Notion sync finished."
+            }
+        }
+
+        return completed
     }
 }
