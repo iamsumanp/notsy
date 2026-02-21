@@ -1005,7 +1005,7 @@ struct RichTextEditorView: NSViewRepresentable {
             if parent.note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let hasContent = !parent.note.plainTextCache.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 if hasContent {
-                    parent.store.updateTitle(noteID: parent.note.id, title: randomSmartTitle())
+                    parent.store.updateTitle(noteID: parent.note.id, title: contentBasedTitle(from: parent.note.plainTextCache))
                     didAutoUpdateTitle = true
                 }
             }
@@ -1014,13 +1014,46 @@ struct RichTextEditorView: NSViewRepresentable {
             }
         }
 
-        private func randomSmartTitle() -> String {
-            let adjectives = ["Quick", "Fresh", "Bright", "Sharp", "Calm", "Bold", "Daily", "Focused", "Neat", "Swift"]
-            let nouns = ["Note", "Idea", "Draft", "Memo", "Plan", "Thought", "List", "Outline", "Snippet", "Entry"]
-            let adjective = adjectives.randomElement() ?? "Quick"
-            let noun = nouns.randomElement() ?? "Note"
-            let suffix = Int.random(in: 100...999)
-            return "\(adjective) \(noun) \(suffix)"
+        private func contentBasedTitle(from text: String) -> String {
+            let lines = text.components(separatedBy: .newlines)
+
+            for rawLine in lines {
+                let cleaned = cleanedCandidateTitleLine(from: rawLine)
+                guard !cleaned.isEmpty else { continue }
+                guard cleaned.range(of: "[[:alnum:]]", options: .regularExpression) != nil else { continue }
+                return truncateTitle(cleaned)
+            }
+
+            return "New Note"
+        }
+
+        private func cleanedCandidateTitleLine(from line: String) -> String {
+            var cleaned = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { return "" }
+
+            cleaned = cleaned.replacingOccurrences(
+                of: #"^\s*(?:[-*•]+|\d+[.)]|[○◉]|#+)\s+"#,
+                with: "",
+                options: .regularExpression
+            )
+            cleaned = cleaned.replacingOccurrences(of: #"`+"#, with: "", options: .regularExpression)
+            cleaned = cleaned.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+
+            return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        private func truncateTitle(_ title: String, maxLength: Int = 52) -> String {
+            guard title.count > maxLength else { return title }
+
+            let prefix = String(title.prefix(maxLength))
+            if let lastSpace = prefix.lastIndex(of: " ") {
+                let wordBoundedLength = prefix.distance(from: prefix.startIndex, to: lastSpace)
+                if wordBoundedLength >= 20 {
+                    return String(prefix[..<lastSpace]) + "..."
+                }
+            }
+
+            return prefix + "..."
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
