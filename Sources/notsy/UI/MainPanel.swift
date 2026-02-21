@@ -902,6 +902,7 @@ struct SidebarView: View {
     var createNewNote: () -> Void
     @Environment(NoteStore.self) private var store
     @State private var draggedNoteID: UUID?
+    @State private var hoveredNoteID: UUID?
     @State private var dragOverPinnedSection = false
     @State private var dragOverRecentSection = false
     @State private var dropTargetNoteID: UUID?
@@ -978,7 +979,6 @@ struct SidebarView: View {
             contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
             showsPinBadge: note.pinned
         )
-        .id("top-\(note.id.uuidString)")
         .onDrag {
             makeDragProvider(for: note)
         }
@@ -1070,7 +1070,6 @@ struct SidebarView: View {
             contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
             showsPinBadge: destinationPinned
         )
-        .id("\(destinationPinned ? "pinned" : "recent")-\(note.id.uuidString)")
         .onDrag {
             makeDragProvider(for: note)
         }
@@ -1081,9 +1080,22 @@ struct SidebarView: View {
                 .opacity(dropTargetNoteID == note.id ? 1 : 0)
                 .padding(.horizontal, 8)
         }
-        .animation(.easeInOut(duration: 0.12), value: dropTargetNoteID == note.id)
         .onDrop(of: [dragTypeIdentifier], isTargeted: dropTargetBinding(for: note.id)) { providers in
             handleDrop(providers: providers, toPinned: destinationPinned, before: note.id)
+        }
+        .onHover { isHovering in
+            if isHovering {
+                hoveredNoteID = note.id
+                refreshRowCursor()
+            } else if hoveredNoteID == note.id {
+                hoveredNoteID = nil
+                NSCursor.arrow.set()
+            }
+        }
+        .onChange(of: draggedNoteID) { _, _ in
+            if hoveredNoteID == note.id {
+                refreshRowCursor()
+            }
         }
         .onTapGesture {
             selectedNoteID = note.id
@@ -1105,11 +1117,19 @@ struct SidebarView: View {
 
     private func makeDragProvider(for note: Note) -> NSItemProvider {
         draggedNoteID = note.id
+        dropTargetNoteID = nil
+        refreshRowCursor()
         return NSItemProvider(object: note.id.uuidString as NSString)
     }
 
     private func handleDrop(providers: [NSItemProvider], toPinned: Bool, before beforeNoteID: UUID? = nil) -> Bool {
         guard queryBuffer.isEmpty else { return false }
+
+        if let draggedID = draggedNoteID {
+            applyDrop(draggedID: draggedID, toPinned: toPinned, before: beforeNoteID)
+            return true
+        }
+
         guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(dragTypeIdentifier) }) else {
             return false
         }
@@ -1132,19 +1152,34 @@ struct SidebarView: View {
             }
 
             Task { @MainActor in
-                withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.82, blendDuration: 0.08)) {
-                    store.moveNote(noteID: draggedID, toPinned: toPinned, before: beforeNoteID)
-                }
-                selectedNoteID = draggedID
-                dropTargetNoteID = nil
-                draggedNoteID = nil
-                dragOverPinnedSection = false
-                dragOverRecentSection = false
-                focus = .editor
+                applyDrop(draggedID: draggedID, toPinned: toPinned, before: beforeNoteID)
             }
         }
 
         return true
+    }
+
+    @MainActor
+    private func applyDrop(draggedID: UUID, toPinned: Bool, before beforeNoteID: UUID? = nil) {
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.92, blendDuration: 0.05)) {
+            store.moveNote(noteID: draggedID, toPinned: toPinned, before: beforeNoteID)
+        }
+        selectedNoteID = draggedID
+        dropTargetNoteID = nil
+        draggedNoteID = nil
+        dragOverPinnedSection = false
+        dragOverRecentSection = false
+        refreshRowCursor()
+        focus = .editor
+    }
+
+    private func refreshRowCursor() {
+        guard hoveredNoteID != nil else { return }
+        if draggedNoteID != nil {
+            NSCursor.closedHand.set()
+        } else {
+            NSCursor.pointingHand.set()
+        }
     }
 
     private func dropTargetBinding(for noteID: UUID) -> Binding<Bool> {
