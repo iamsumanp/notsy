@@ -8,3 +8,8 @@
 !.gitignore
 !README.md
 !Notsy.dmg
+
+
+# Include docs and its contents
+!docs/
+!docs/**
