@@ -15,7 +15,7 @@ Notsy is a lightning-fast, keyboard-first, native macOS notes application design
 - **Smart Markdown-like Lists:** Natively converts `- ` into bullets and supports nested tab-indentation and Notion-style interactive checkboxes `○` / `◉`.
 - **Instant Search:** As you type, Notsy searches titles and content and auto-selects the top hit for instant editing.
 - **Pinning:** Keep important notes at the top of your sidebar forever.
-- **Privacy Focused:** 100% offline. All notes and rich text data are stored locally on your machine.
+- **Privacy Focused:** Local-first. Notes are stored on your machine, with optional Notion sync only if you enable it.
 - **Native Performance:** Built purely with Swift, SwiftUI, and TextKit 2 for zero-lag typing and minimal resource usage.
 
 ---
@@ -50,7 +50,7 @@ Rich text editor highlights:
 ## 🚀 Installation
 
 ### Download
-1. **[Download the latest installer (Notsy.dmg)](https://github.com/iamsumanp/notsy/raw/main/Notsy.dmg)** *(Link placeholder until uploaded to releases)*
+1. **[Download the latest installer (Notsy.dmg)](https://github.com/iamsumanp/notsy/raw/main/Notsy.dmg)**
 2. Open the disk image and drag **Notsy** to your Applications folder.
 
 ### First Run
@@ -91,6 +91,7 @@ To enable Notion sync in Notsy, you need a **Notion integration token** and a **
    - Example URL: `https://www.notion.so/<workspace>/<name>-0123456789abcdef0123456789abcdef?v=...`
    - Database ID: `0123456789abcdef0123456789abcdef`
 8. In Notsy, open **Preferences** and paste the token and database ID into the Notion sync settings.
+9. Notsy stores your Notion token securely in the macOS Keychain.
 
 ---
 
@@ -121,14 +122,16 @@ swift run
 - `Sources/notsy/Models/`: Core data logic (`Note`, `NoteStore`) and local JSON persistence.
 - `Sources/notsy/UI/`: SwiftUI views (`MainPanel`, `PreferencesView`, `Theme`) and the highly customized `RichTextEditorView` TextKit wrapper.
 - `Sources/notsy/Extensions/`: Global Carbon hotkey manager.
+- `Sources/notsy/Services/`: Notion sync, OAuth callback server, and Keychain helpers.
 
 ---
 
 ## 🔒 Privacy
 
-Notsy operates **100% offline**. Your data is never sent to the cloud.
-Your notes history is stored locally in plain JSON and standard Apple RTF data at:
+Notsy is **local-first**. Your notes history is stored locally in plain JSON and standard Apple RTF data at:
 `~/Library/Application Support/Notsy/notes.json`
+
+If you enable Notion sync, Notsy sends note data to your configured Notion database and stores credentials in macOS Keychain.
 
 ---
 
