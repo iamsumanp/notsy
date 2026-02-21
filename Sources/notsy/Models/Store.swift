@@ -69,6 +69,35 @@ final class NoteStore {
         }
     }
 
+    func moveNote(noteID: UUID, toPinned: Bool, before beforeNoteID: UUID? = nil) {
+        guard let sourceIndex = notes.firstIndex(where: { $0.id == noteID }) else { return }
+
+        var reordered = notes
+        let movingNote = reordered.remove(at: sourceIndex)
+        movingNote.pinned = toPinned
+
+        if let beforeNoteID,
+           let targetIndex = reordered.firstIndex(where: { $0.id == beforeNoteID }) {
+            reordered.insert(movingNote, at: targetIndex)
+        } else if toPinned {
+            if let lastPinnedIndex = reordered.lastIndex(where: { $0.pinned }) {
+                reordered.insert(movingNote, at: lastPinnedIndex + 1)
+            } else {
+                reordered.insert(movingNote, at: 0)
+            }
+        } else {
+            if let lastUnpinnedIndex = reordered.lastIndex(where: { !$0.pinned }) {
+                reordered.insert(movingNote, at: lastUnpinnedIndex + 1)
+            } else {
+                reordered.append(movingNote)
+            }
+        }
+
+        notes = reordered
+        save()
+        scheduleNotionSync(for: movingNote)
+    }
+
     func sortNotes() {
         let sorted = notes.sorted { $0.updatedAt > $1.updatedAt }
         notes = sorted

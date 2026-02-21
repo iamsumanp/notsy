@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum EditorFontStyle: Equatable {
     case sans
@@ -900,109 +901,32 @@ struct SidebarView: View {
     @FocusState var focus: MainPanel.FocusField?
     var createNewNote: () -> Void
     @Environment(NoteStore.self) private var store
+    @State private var draggedNoteID: UUID?
+    @State private var dragOverPinnedSection = false
+    @State private var dragOverRecentSection = false
+    @State private var dropTargetNoteID: UUID?
+    private let dragTypeIdentifier = UTType.plainText.identifier
 
     var body: some View {
+        let pinned = filteredNotes.filter { $0.pinned }
+        let recent = filteredNotes.filter { !$0.pinned }
+        let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
+        let displayPinned = pinned.filter { $0.id != topHitID }
+        let displayRecent = recent.filter { $0.id != topHitID }
+
         VStack(spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    let pinned = filteredNotes.filter { $0.pinned }
-                    let recent = filteredNotes.filter { !$0.pinned }
-                    let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
-
-                    if !queryBuffer.isEmpty && !filteredNotes.isEmpty {
-                        Text("TOP HIT")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(Theme.textMuted)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                            .padding(.bottom, 4)
-
-                        if let firstNote = filteredNotes.first {
-                            NoteRowView(
-                                note: firstNote,
-                                isSelected: selectedNoteID == firstNote.id,
-                                contentPreviewText: contentPreviewCache[firstNote.id] ?? firstNote.plainTextCache,
-                                showsPinBadge: firstNote.pinned
-                            )
-                            .id("top-\(firstNote.id.uuidString)")
-                            .onTapGesture {
-                                selectedNoteID = firstNote.id
-                                focus = .editor
-                            }
-                        }
+                    if !queryBuffer.isEmpty, let firstNote = filteredNotes.first {
+                        topHitRow(note: firstNote)
                     }
 
-                    let displayPinned = pinned.filter { $0.id != topHitID }
-                    let displayRecent = recent.filter { $0.id != topHitID }
-
-                    if !displayPinned.isEmpty {
-                        Text("PINNED")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(Theme.textMuted)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                            .padding(.bottom, 4)
-
-                        ForEach(displayPinned) { note in
-                            NoteRowView(
-                                note: note,
-                                isSelected: selectedNoteID == note.id,
-                                contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
-                                showsPinBadge: true
-                            )
-                            .id("pinned-\(note.id.uuidString)")
-                            .onTapGesture {
-                                selectedNoteID = note.id
-                                focus = .editor
-                            }
-                            .contextMenu {
-                                Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
-                                    Text("Unpin")
-                                    Image(systemName: "pin.slash")
-                                }
-                                Button(action: {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(note.plainTextCache, forType: .string)
-                                }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
-                                Divider()
-                                Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
-                            }
-                        }
+                    if !displayPinned.isEmpty || draggedNoteID != nil {
+                        pinnedSection(notes: displayPinned)
                     }
 
-                    if !displayRecent.isEmpty {
-                        Text("NOTES")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(Theme.textMuted)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 16)
-                            .padding(.bottom, 4)
-
-                        ForEach(displayRecent) { note in
-                            NoteRowView(
-                                note: note,
-                                isSelected: selectedNoteID == note.id,
-                                contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
-                                showsPinBadge: false
-                            )
-                            .id("recent-\(note.id.uuidString)")
-                            .onTapGesture {
-                                selectedNoteID = note.id
-                                focus = .editor
-                            }
-                            .contextMenu {
-                                Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
-                                    Text("Pin")
-                                    Image(systemName: "pin")
-                                }
-                                Button(action: {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(note.plainTextCache, forType: .string)
-                                }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
-                                Divider()
-                                Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
-                            }
-                        }
+                    if !displayRecent.isEmpty || draggedNoteID != nil {
+                        recentSection(notes: displayRecent)
                     }
 
                     Text("ACTIONS")
@@ -1037,6 +961,203 @@ struct SidebarView: View {
             }
             .focused($focus, equals: .list)
         }
+    }
+
+    @ViewBuilder
+    private func topHitRow(note: Note) -> some View {
+        Text("TOP HIT")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundColor(Theme.textMuted)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+
+        NoteRowView(
+            note: note,
+            isSelected: selectedNoteID == note.id,
+            contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
+            showsPinBadge: note.pinned
+        )
+        .id("top-\(note.id.uuidString)")
+        .onDrag {
+            makeDragProvider(for: note)
+        }
+        .onTapGesture {
+            selectedNoteID = note.id
+            focus = .editor
+        }
+    }
+
+    @ViewBuilder
+    private func pinnedSection(notes: [Note]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("PINNED")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(Theme.textMuted)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 4)
+
+            ForEach(notes) { note in
+                noteRow(note: note, destinationPinned: true)
+            }
+
+            if notes.isEmpty, draggedNoteID != nil {
+                Text("Drop to pin")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.textMuted.opacity(0.8))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(dragOverPinnedSection ? Theme.selection.opacity(0.16) : Color.clear)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(dragOverPinnedSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
+        )
+        .cornerRadius(8)
+        .animation(.easeInOut(duration: 0.12), value: dragOverPinnedSection)
+        .onDrop(of: [dragTypeIdentifier], isTargeted: $dragOverPinnedSection) { providers in
+            handleDrop(providers: providers, toPinned: true)
+        }
+    }
+
+    @ViewBuilder
+    private func recentSection(notes: [Note]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("NOTES")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(Theme.textMuted)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 4)
+
+            ForEach(notes) { note in
+                noteRow(note: note, destinationPinned: false)
+            }
+
+            if notes.isEmpty, draggedNoteID != nil {
+                Text("Drop to unpin")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.textMuted.opacity(0.8))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(dragOverRecentSection ? Theme.selection.opacity(0.16) : Color.clear)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(dragOverRecentSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
+        )
+        .cornerRadius(8)
+        .animation(.easeInOut(duration: 0.12), value: dragOverRecentSection)
+        .onDrop(of: [dragTypeIdentifier], isTargeted: $dragOverRecentSection) { providers in
+            handleDrop(providers: providers, toPinned: false)
+        }
+    }
+
+    @ViewBuilder
+    private func noteRow(note: Note, destinationPinned: Bool) -> some View {
+        NoteRowView(
+            note: note,
+            isSelected: selectedNoteID == note.id,
+            contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
+            showsPinBadge: destinationPinned
+        )
+        .id("\(destinationPinned ? "pinned" : "recent")-\(note.id.uuidString)")
+        .onDrag {
+            makeDragProvider(for: note)
+        }
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Theme.selection)
+                .frame(height: dropTargetNoteID == note.id ? 2 : 0)
+                .opacity(dropTargetNoteID == note.id ? 1 : 0)
+                .padding(.horizontal, 8)
+        }
+        .animation(.easeInOut(duration: 0.12), value: dropTargetNoteID == note.id)
+        .onDrop(of: [dragTypeIdentifier], isTargeted: dropTargetBinding(for: note.id)) { providers in
+            handleDrop(providers: providers, toPinned: destinationPinned, before: note.id)
+        }
+        .onTapGesture {
+            selectedNoteID = note.id
+            focus = .editor
+        }
+        .contextMenu {
+            Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                Text(destinationPinned ? "Unpin" : "Pin")
+                Image(systemName: destinationPinned ? "pin.slash" : "pin")
+            }
+            Button(action: {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+            }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+            Divider()
+            Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
+        }
+    }
+
+    private func makeDragProvider(for note: Note) -> NSItemProvider {
+        draggedNoteID = note.id
+        return NSItemProvider(object: note.id.uuidString as NSString)
+    }
+
+    private func handleDrop(providers: [NSItemProvider], toPinned: Bool, before beforeNoteID: UUID? = nil) -> Bool {
+        guard queryBuffer.isEmpty else { return false }
+        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(dragTypeIdentifier) }) else {
+            return false
+        }
+
+        provider.loadItem(forTypeIdentifier: dragTypeIdentifier, options: nil) { item, _ in
+            let rawValue: String?
+            if let data = item as? Data {
+                rawValue = String(data: data, encoding: .utf8)
+            } else if let text = item as? String {
+                rawValue = text
+            } else if let text = item as? NSString {
+                rawValue = text as String
+            } else {
+                rawValue = nil
+            }
+
+            guard let rawValue,
+                  let draggedID = UUID(uuidString: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                return
+            }
+
+            Task { @MainActor in
+                withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.82, blendDuration: 0.08)) {
+                    store.moveNote(noteID: draggedID, toPinned: toPinned, before: beforeNoteID)
+                }
+                selectedNoteID = draggedID
+                dropTargetNoteID = nil
+                draggedNoteID = nil
+                dragOverPinnedSection = false
+                dragOverRecentSection = false
+                focus = .editor
+            }
+        }
+
+        return true
+    }
+
+    private func dropTargetBinding(for noteID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { dropTargetNoteID == noteID },
+            set: { isTargeted in
+                if isTargeted {
+                    dropTargetNoteID = noteID
+                } else if dropTargetNoteID == noteID {
+                    dropTargetNoteID = nil
+                }
+            }
+        )
     }
 }
 struct RichTextEditorWrapper: View {
