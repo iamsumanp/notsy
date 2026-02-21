@@ -110,6 +110,11 @@ struct PreferencesView: View {
         removeKeyMonitor()
     }
 
+    private func cancelRecordingIfNeeded() {
+        guard isRecordingHotkey else { return }
+        stopRecordingHotkey(message: "Recording canceled.")
+    }
+
     private func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
         var value: UInt32 = 0
         if flags.contains(.command) { value |= UInt32(cmdKey) }
@@ -151,10 +156,6 @@ struct PreferencesView: View {
         UserDefaults.standard.set(notionSyncEnabled, forKey: NotionSyncService.enabledDefaultsKey)
         UserDefaults.standard.set(trimmedDatabaseID, forKey: NotionSyncService.databaseIDDefaultsKey)
 
-        if !notionSyncEnabled {
-            store.cancelPendingNotionSync()
-        }
-
         if !trimmedIntegrationSecret.isEmpty {
             guard KeychainHelper.save(
                 service: NotionSyncService.keychainService,
@@ -183,7 +184,7 @@ struct PreferencesView: View {
     private func scheduleNotionAutosave() {
         notionAutosaveTask?.cancel()
         notionAutosaveTask = Task {
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            try? await Task.sleep(nanoseconds: 450_000_000)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 persistNotionSettings(showMessage: false)
@@ -249,6 +250,9 @@ struct PreferencesView: View {
                         .font(.subheadline)
 
                     Toggle("Enable Notion sync", isOn: $notionSyncEnabled)
+                        .onTapGesture {
+                            cancelRecordingIfNeeded()
+                        }
                         .onChange(of: notionSyncEnabled) { _, isEnabled in
                             persistNotionSettings(showMessage: false)
                             if !isEnabled {
@@ -262,6 +266,9 @@ struct PreferencesView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                         TextField("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", text: $notionDatabaseID)
+                            .onTapGesture {
+                                cancelRecordingIfNeeded()
+                            }
                             .onChange(of: notionDatabaseID) { _, _ in
                                 scheduleNotionAutosave()
                             }
@@ -272,6 +279,9 @@ struct PreferencesView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                         SecureField("ntn_... or secret_...", text: $notionIntegrationSecret)
+                            .onTapGesture {
+                                cancelRecordingIfNeeded()
+                            }
                             .onChange(of: notionIntegrationSecret) { _, _ in
                                 scheduleNotionAutosave()
                             }
@@ -359,6 +369,7 @@ struct PreferencesView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onDisappear {
+            notionAutosaveTask?.cancel()
             removeKeyMonitor()
         }
         .frame(width: 480, height: 560)

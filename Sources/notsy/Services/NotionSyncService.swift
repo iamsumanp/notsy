@@ -1,14 +1,17 @@
+import AppKit
 import Foundation
 
 struct NotionNoteSnapshot {
     let id: UUID
     let title: String
     let plainText: String
+    let attributedContent: Data
 }
 
 enum NotionNoteSyncResult {
     case synced
     case skipped
+    case paused(String)
     case failed(String)
 }
 
@@ -40,6 +43,8 @@ enum NotionConnectionCheckResult {
 
 actor NotionSyncService {
     static let shared = NotionSyncService()
+    private static let notionAPIVersion = "2022-06-28"
+    private static let notionFileUploadAPIVersion = "2025-09-03"
 
     static let enabledDefaultsKey = "NotsyNotionSyncEnabled"
     static let databaseIDDefaultsKey = "NotsyNotionDatabaseID"
@@ -66,19 +71,24 @@ actor NotionSyncService {
     }
 
     func sync(note: NotionNoteSnapshot) async -> NotionNoteSyncResult {
-        guard let config = loadConfig(), config.enabled else { return .skipped }
-
-        do {
-            let pageID = try await upsertPage(for: note, config: config)
-            if pageMap[note.id.uuidString] != pageID {
-                pageMap[note.id.uuidString] = pageID
-                savePageMap()
+        switch loadConfigState() {
+        case .disabled:
+            return .skipped
+        case .misconfigured(let message):
+            return .paused(message)
+        case .ready(let config):
+            do {
+                let pageID = try await upsertPage(for: note, config: config)
+                if pageMap[note.id.uuidString] != pageID {
+                    pageMap[note.id.uuidString] = pageID
+                    savePageMap()
+                }
+                return .synced
+            } catch {
+                // Keep local note edits resilient even when Notion is unavailable.
+                print("Notion sync failed for note \(note.id): \(error)")
+                return .failed(String(describing: error))
             }
-            return .synced
-        } catch {
-            // Keep local note edits resilient even when Notion is unavailable.
-            print("Notion sync failed for note \(note.id): \(error)")
-            return .failed(String(describing: error))
         }
     }
 
@@ -230,9 +240,11 @@ actor NotionSyncService {
         let titlePropertyName = try await resolveTitlePropertyName(config: config)
         if let existingPageID = pageMap[note.id.uuidString] {
             try await updatePage(pageID: existingPageID, note: note, titlePropertyName: titlePropertyName, config: config)
-            try await replacePageChildren(pageID: existingPageID, plainText: note.plainText, config: config)
+            try await replacePageChildren(pageID: existingPageID, note: note, config: config)
             return existingPageID
         }
+
+        let children = try await makeChildren(from: note, token: config.token)
 
         let body: [String: Any] = [
             "parent": ["database_id": config.databaseID],
@@ -243,7 +255,7 @@ actor NotionSyncService {
                     ]
                 ]
             ],
-            "children": makeChildren(from: note.plainText)
+            "children": children
         ]
 
         let response = try await request(
@@ -276,7 +288,7 @@ actor NotionSyncService {
         )
     }
 
-    private func replacePageChildren(pageID: String, plainText: String, config: NotionConfig) async throws {
+    private func replacePageChildren(pageID: String, note: NotionNoteSnapshot, config: NotionConfig) async throws {
         let childIDs = try await listChildBlockIDs(pageID: pageID, token: config.token)
         for blockID in childIDs {
             _ = try await request(
@@ -287,7 +299,7 @@ actor NotionSyncService {
             )
         }
 
-        let children = makeChildren(from: plainText)
+        let children = try await makeChildren(from: note, token: config.token)
         guard !children.isEmpty else { return }
 
         _ = try await request(
@@ -337,16 +349,39 @@ actor NotionSyncService {
         throw NotionSyncError.invalidResponse("No title property found in database")
     }
 
-    private func makeChildren(from plainText: String) -> [[String: Any]] {
-        let normalized = plainText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return [] }
-
-        let lines = normalized.components(separatedBy: .newlines)
+    private func makeChildren(from note: NotionNoteSnapshot, token: String) async throws -> [[String: Any]] {
+        let segments = contentSegments(from: note)
         var children: [[String: Any]] = []
 
+        for segment in segments {
+            switch segment {
+            case .text(let text):
+                appendParagraphBlocks(from: text, to: &children)
+            case .image(let image):
+                let fileUploadID = try await uploadImage(image, token: token)
+                children.append([
+                    "object": "block",
+                    "type": "image",
+                    "image": [
+                        "type": "file_upload",
+                        "file_upload": ["id": fileUploadID]
+                    ]
+                ])
+            }
+            if children.count >= 100 { break }
+        }
+
+        return children
+    }
+
+    private func appendParagraphBlocks(from text: String, to children: inout [[String: Any]]) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+
+        let lines = normalized.components(separatedBy: .newlines)
         for line in lines {
             let content = line.isEmpty ? " " : String(line.prefix(1800))
-            let block: [String: Any] = [
+            children.append([
                 "object": "block",
                 "type": "paragraph",
                 "paragraph": [
@@ -357,12 +392,181 @@ actor NotionSyncService {
                         ]
                     ]
                 ]
-            ]
-            children.append(block)
-            if children.count >= 100 { break }
+            ])
+            if children.count >= 100 { return }
+        }
+    }
+
+    private func contentSegments(from note: NotionNoteSnapshot) -> [NotionContentSegment] {
+        let attributed = attributedString(from: note)
+        var segments: [NotionContentSegment] = []
+        var bufferedText = ""
+        let fullRange = NSRange(location: 0, length: attributed.length)
+
+        attributed.enumerateAttributes(in: fullRange) { attributes, range, _ in
+            if let attachment = attributes[.attachment] as? NSTextAttachment {
+                let inlineText = attributed.attributedSubstring(from: range).string
+                    .replacingOccurrences(of: "\u{FFFC}", with: "")
+                if !inlineText.isEmpty {
+                    bufferedText += inlineText
+                }
+
+                let trimmedBuffered = bufferedText.trimmingCharacters(in: .newlines)
+                if !trimmedBuffered.isEmpty {
+                    segments.append(.text(bufferedText))
+                }
+                bufferedText = ""
+
+                if let imageData = pngData(from: attachment) {
+                    segments.append(.image(imageData))
+                }
+                return
+            }
+
+            bufferedText += attributed.attributedSubstring(from: range).string
         }
 
-        return children
+        let trimmedBuffered = bufferedText.trimmingCharacters(in: .newlines)
+        if !trimmedBuffered.isEmpty {
+            segments.append(.text(bufferedText))
+        }
+
+        if segments.isEmpty {
+            return [.text(note.plainText)]
+        }
+        return segments
+    }
+
+    private func attributedString(from note: NotionNoteSnapshot) -> NSAttributedString {
+        guard !note.attributedContent.isEmpty else { return NSAttributedString(string: note.plainText) }
+
+        let rtfdOptions: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.rtfd
+        ]
+        if let attributed = try? NSAttributedString(
+            data: note.attributedContent,
+            options: rtfdOptions,
+            documentAttributes: nil
+        ) {
+            return attributed
+        }
+
+        let rtfOptions: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.rtf
+        ]
+        if let attributed = try? NSAttributedString(
+            data: note.attributedContent,
+            options: rtfOptions,
+            documentAttributes: nil
+        ) {
+            return attributed
+        }
+
+        return NSAttributedString(string: note.plainText)
+    }
+
+    private func pngData(from attachment: NSTextAttachment) -> Data? {
+        if let data = attachment.fileWrapper?.regularFileContents,
+           let image = NSImage(data: data) {
+            return pngData(from: image)
+        }
+        if let image = attachment.image {
+            return pngData(from: image)
+        }
+        return nil
+    }
+
+    private func pngData(from image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapRep = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return bitmapRep.representation(using: .png, properties: [:])
+    }
+
+    private func uploadImage(_ data: Data, token: String) async throws -> String {
+        guard data.count <= 20 * 1024 * 1024 else {
+            throw NotionSyncError.invalidResponse("Image exceeds Notion 20MB file upload limit")
+        }
+
+        let filename = "notsy-image-\(UUID().uuidString).png"
+        let response = try await request(
+            method: "POST",
+            path: "/v1/file_uploads",
+            token: token,
+            body: [
+                "mode": "single_part",
+                "filename": filename,
+                "content_type": "image/png"
+            ],
+            notionVersion: Self.notionFileUploadAPIVersion
+        )
+
+        guard let fileUploadID = response["id"] as? String else {
+            throw NotionSyncError.invalidResponse("Missing file upload id")
+        }
+
+        try await sendFileUpload(
+            fileUploadID: fileUploadID,
+            data: data,
+            filename: filename,
+            contentType: "image/png",
+            token: token
+        )
+        try await waitForFileUploadCompletion(fileUploadID: fileUploadID, token: token)
+        return fileUploadID
+    }
+
+    private func sendFileUpload(fileUploadID: String, data: Data, filename: String, contentType: String, token: String) async throws {
+        guard let url = URL(string: "https://api.notion.com/v1/file_uploads/\(fileUploadID)/send") else {
+            throw NotionSyncError.invalidURL
+        }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(contentType)\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(Self.notionFileUploadAPIVersion, forHTTPHeaderField: "Notion-Version")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NotionSyncError.invalidResponse("No HTTP response")
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw NotionSyncError.http("File upload failed with HTTP \(httpResponse.statusCode)")
+        }
+    }
+
+    private func waitForFileUploadCompletion(fileUploadID: String, token: String) async throws {
+        for _ in 0..<10 {
+            let response = try await request(
+                method: "GET",
+                path: "/v1/file_uploads/\(fileUploadID)",
+                token: token,
+                body: nil,
+                notionVersion: Self.notionFileUploadAPIVersion
+            )
+            let status = response["status"] as? String
+            if status == "uploaded" {
+                return
+            }
+            if status == "failed" {
+                let message = response["message"] as? String ?? "Notion file upload failed"
+                throw NotionSyncError.invalidResponse(message)
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+
+        throw NotionSyncError.invalidResponse("Timed out waiting for uploaded image")
     }
 
     private func safeTitle(from title: String) -> String {
@@ -370,7 +574,13 @@ actor NotionSyncService {
         return trimmed.isEmpty ? "Untitled" : String(trimmed.prefix(200))
     }
 
-    private func request(method: String, path: String, token: String, body: [String: Any]?) async throws -> [String: Any] {
+    private func request(
+        method: String,
+        path: String,
+        token: String,
+        body: [String: Any]?,
+        notionVersion: String = NotionSyncService.notionAPIVersion
+    ) async throws -> [String: Any] {
         guard let url = URL(string: "https://api.notion.com\(path)") else {
             throw NotionSyncError.invalidURL
         }
@@ -378,7 +588,7 @@ actor NotionSyncService {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+        request.setValue(notionVersion, forHTTPHeaderField: "Notion-Version")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         if let body {
@@ -400,10 +610,13 @@ actor NotionSyncService {
         return jsonObject ?? [:]
     }
 
-    private func loadConfig() -> NotionConfig? {
+    private func loadConfigState() -> NotionConfigLoadState {
         let defaults = UserDefaults.standard
         let enabled = defaults.bool(forKey: Self.enabledDefaultsKey)
-        let databaseID = defaults.string(forKey: Self.databaseIDDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !enabled { return .disabled }
+
+        let databaseIDRaw = defaults.string(forKey: Self.databaseIDDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let databaseID = databaseIDRaw.replacingOccurrences(of: "-", with: "")
         let oauthToken = KeychainHelper.load(
             service: Self.keychainService,
             account: Self.oauthAccessTokenKeychainAccount
@@ -414,8 +627,17 @@ actor NotionSyncService {
         )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let token = oauthToken.isEmpty ? legacyToken : oauthToken
 
-        guard !databaseID.isEmpty, !token.isEmpty else { return nil }
-        return NotionConfig(enabled: enabled, databaseID: databaseID, token: token)
+        guard !databaseID.isEmpty else {
+            return .misconfigured("Notion sync paused: add your database ID in Preferences.")
+        }
+        guard Self.isValidDatabaseID(databaseID) else {
+            return .misconfigured("Notion sync paused: database ID format is invalid.")
+        }
+        guard !token.isEmpty else {
+            return .misconfigured("Notion sync paused: add your integration secret.")
+        }
+
+        return .ready(NotionConfig(enabled: enabled, databaseID: databaseID, token: token))
     }
 
     private static func loadPageMap(from url: URL) -> [String: String] {
@@ -448,6 +670,17 @@ private struct NotionConfig {
     let enabled: Bool
     let databaseID: String
     let token: String
+}
+
+private enum NotionConfigLoadState {
+    case disabled
+    case ready(NotionConfig)
+    case misconfigured(String)
+}
+
+private enum NotionContentSegment {
+    case text(String)
+    case image(Data)
 }
 
 private enum NotionSyncError: Error {

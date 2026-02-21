@@ -26,6 +26,9 @@ struct MainPanel: View {
     @State private var showColorPalette = false
     @State private var activeEditorColor = Theme.editorTextNSColor
     @State private var previewImage: NSImage?
+    @State private var showLinkEditor = false
+    @State private var linkEditorText = ""
+    @State private var linkEditorURL = ""
     @State private var showEditorFind = false
     @State private var editorFindQuery = ""
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
@@ -36,6 +39,7 @@ struct MainPanel: View {
     @State private var sidebarResizeHovering = false
     @State private var sidebarContentPreviewCache: [UUID: String] = [:]
     @State private var autoExpandedSidebarForSearch = false
+    @State private var keyDownMonitor: Any?
 
     enum FocusField: Hashable {
         case search
@@ -49,6 +53,7 @@ struct MainPanel: View {
     let newNotePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyNewNote"))
     let focusSearchPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyFocusSearch"))
     let previewImagePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyPreviewImage"))
+    let openLinkEditorPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpenLinkEditor"))
     private let editorFindActionNotification = NSNotification.Name("NotsyEditorFindAction")
 
     var filteredNotes: [Note] {
@@ -79,6 +84,10 @@ struct MainPanel: View {
 
     private var selectedThemeVariant: NotsyThemeVariant {
         NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish
+    }
+
+    private var mostRecentlyModifiedNoteID: UUID? {
+        store.notes.max(by: { $0.updatedAt < $1.updatedAt })?.id
     }
 
     var body: some View {
@@ -357,7 +366,7 @@ struct MainPanel: View {
                             store.delete(note)
                         }
                         if let selected = selectedNoteID, !store.notes.contains(where: { $0.id == selected }) {
-                            selectedNoteID = store.notes.first?.id
+                            selectedNoteID = mostRecentlyModifiedNoteID
                         }
                     }
                 }) {
@@ -429,18 +438,104 @@ struct MainPanel: View {
                 .zIndex(200)
             }
         }
+        .overlay {
+            if showLinkEditor {
+                ZStack {
+                    Color.black.opacity(0.65)
+                        .ignoresSafeArea()
+                        .onTapGesture { showLinkEditor = false }
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text(linkEditorText.isEmpty ? "Add Link" : "Edit Link")
+                                .font(.system(size: 34, weight: .bold))
+                                .foregroundColor(Theme.text)
+                            Spacer()
+                            Button(action: { showLinkEditor = false }) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 22, weight: .medium))
+                                    .foregroundColor(Theme.textMuted)
+                                    .frame(width: 32, height: 32)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Text("Text")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Theme.textMuted)
+                        TextField("youtube", text: $linkEditorText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 18))
+                            .foregroundColor(Theme.text)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Theme.bg)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+                            .cornerRadius(10)
+
+                        Text("Link")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Theme.textMuted)
+                        TextField("https://www.youtube.com", text: $linkEditorURL)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 18))
+                            .foregroundColor(Theme.text)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Theme.bg)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+                            .cornerRadius(10)
+
+                        HStack {
+                            Spacer()
+                            Button("Cancel") {
+                                showLinkEditor = false
+                            }
+                            .buttonStyle(PointerPlainButtonStyle())
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 8)
+                            .background(Theme.elementBg)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+                            .cornerRadius(10)
+                            .foregroundColor(Theme.textMuted)
+
+                            Button("Save") {
+                                applyLinkEditor()
+                            }
+                            .buttonStyle(PointerPlainButtonStyle())
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 8)
+                            .background(Color(red: 0.14, green: 0.42, blue: 0.29))
+                            .cornerRadius(10)
+                            .foregroundColor(.white)
+                        }
+                    }
+                    .padding(24)
+                    .frame(width: 720)
+                    .background(Theme.sidebarBg)
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Theme.border, lineWidth: 1))
+                    .cornerRadius(16)
+                }
+                .zIndex(220)
+            }
+        }
         .onReceive(newNotePub) { _ in createNewNote(fromQuery: false) }
         .onReceive(previewImagePub) { notification in
             if let image = notification.userInfo?["image"] as? NSImage {
                 previewImage = image
             }
         }
+        .onReceive(openLinkEditorPub) { notification in
+            linkEditorText = (notification.userInfo?["text"] as? String) ?? ""
+            linkEditorURL = (notification.userInfo?["url"] as? String) ?? ""
+            showLinkEditor = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpened"))) { _ in
             store.sortNotes()
             queryBuffer = ""
             refreshSidebarPreviewCache()
-            if let first = store.notes.first {
-                selectedNoteID = first.id
+            if let mostRecentID = mostRecentlyModifiedNoteID {
+                selectedNoteID = mostRecentID
                 // Delay slightly to let the view render before stealing focus into the NSViewRepresentable
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     focus = .editor
@@ -473,9 +568,13 @@ struct MainPanel: View {
         .onAppear {
             sidebarRuntimeWidth = CGFloat(sidebarWidth)
             refreshSidebarPreviewCache()
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in handleKeyDown(event) }
-            if selectedNoteID == nil, let first = store.notes.first { 
-                selectedNoteID = first.id 
+            if keyDownMonitor == nil {
+                keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    handleKeyDown(event)
+                }
+            }
+            if selectedNoteID == nil, let mostRecentID = mostRecentlyModifiedNoteID {
+                selectedNoteID = mostRecentID
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     focus = .editor
                 }
@@ -483,9 +582,20 @@ struct MainPanel: View {
                 focus = .search
             }
         }
+        .onDisappear {
+            if let keyDownMonitor {
+                NSEvent.removeMonitor(keyDownMonitor)
+                self.keyDownMonitor = nil
+            }
+        }
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Ignore global key handling unless the main Notsy panel is the active key window.
+        guard AppDelegate.shared?.panel.isKeyWindow == true else { return event }
+        // While the custom link modal is open, let its text fields handle all typing.
+        if showLinkEditor { return event }
+
         // Up/Down in global search should navigate matched notes.
         if (focus == .search || focus == .list),
            !filteredNotes.isEmpty,
@@ -643,6 +753,19 @@ struct MainPanel: View {
         )
     }
 
+    private func applyLinkEditor() {
+        let trimmedURL = linkEditorURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else { return }
+        let trimmedText = linkEditorText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        NotificationCenter.default.post(
+            name: NSNotification.Name("NotsyApplyLinkEditor"),
+            object: nil,
+            userInfo: ["text": trimmedText, "url": trimmedURL]
+        )
+        showLinkEditor = false
+    }
+
     private func capitalizeFirstCharacter(_ value: String) -> String {
         guard let first = value.first else { return value }
         return String(first).uppercased() + value.dropFirst()
@@ -699,6 +822,14 @@ struct MainPanel: View {
 
             Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "strikethrough"]) }) {
                 Text("S").font(.system(size: 12, weight: .semibold)).strikethrough().frame(width: 20, height: 20).background(editorState.isStrikethrough ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "link"]) }) {
+                Image(systemName: "link")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .background(Color.clear)
+                    .cornerRadius(4)
             }.buttonStyle(PointerPlainButtonStyle())
 
             Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
@@ -769,137 +900,145 @@ struct SidebarView: View {
     @FocusState var focus: MainPanel.FocusField?
     var createNewNote: () -> Void
     @Environment(NoteStore.self) private var store
-    
+
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        
-                        let pinned = filteredNotes.filter { $0.pinned }
-                        let recent = filteredNotes.filter { !$0.pinned }
-                        
-                        let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
-                        
-                        if !queryBuffer.isEmpty && !filteredNotes.isEmpty {
-                            Text("TOP HIT")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(Theme.textMuted)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
-                            
-                            if let firstNote = filteredNotes.first {
-                                NoteRowView(note: firstNote, isSelected: selectedNoteID == firstNote.id, contentPreviewText: contentPreviewCache[firstNote.id] ?? firstNote.plainTextCache)
-                                    .id("top-\(firstNote.id.uuidString)-\(firstNote.title)")
-                                    .onTapGesture {
-                                        selectedNoteID = firstNote.id
-                                        focus = .editor
-                                    }
-                            }
-                        }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    let pinned = filteredNotes.filter { $0.pinned }
+                    let recent = filteredNotes.filter { !$0.pinned }
+                    let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
 
-                        let displayPinned = pinned.filter { $0.id != topHitID }
-                        let displayRecent = recent.filter { $0.id != topHitID }
-
-                        if !displayPinned.isEmpty {
-                            Text("PINNED")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(Theme.textMuted)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
-                            
-                            ForEach(displayPinned) { note in
-                                NoteRowView(note: note, isSelected: selectedNoteID == note.id, contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache)
-                                    .id("pinned-\(note.id.uuidString)-\(note.title)")
-                                    .onTapGesture {
-                                        selectedNoteID = note.id
-                                        focus = .editor
-                                    }
-                                    .contextMenu {
-                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
-                                            Text("Unpin")
-                                            Image(systemName: "pin.slash")
-                                        }
-                                        Button(action: {
-                                            NSPasteboard.general.clearContents()
-                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
-                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
-                                        Divider()
-                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
-                                    }
-                            }
-                        }
-
-                        if !displayRecent.isEmpty {
-                            Text("NOTES")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(Theme.textMuted)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 16)
-                                .padding(.bottom, 4)
-                            
-                            ForEach(displayRecent) { note in
-                                NoteRowView(note: note, isSelected: selectedNoteID == note.id, contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache)
-                                    .id("recent-\(note.id.uuidString)-\(note.title)")
-                                    .onTapGesture {
-                                        selectedNoteID = note.id
-                                        focus = .editor
-                                    }
-                                    .contextMenu {
-                                        Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
-                                            Text("Pin")
-                                            Image(systemName: "pin")
-                                        }
-                                        Button(action: {
-                                            NSPasteboard.general.clearContents()
-                                            NSPasteboard.general.setString(note.plainTextCache, forType: .string)
-                                        }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
-                                        Divider()
-                                        Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
-                                    }
-                            }
-                        }
-
-                        Text("ACTIONS")
+                    if !queryBuffer.isEmpty && !filteredNotes.isEmpty {
+                        Text("TOP HIT")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(Theme.textMuted)
                             .padding(.horizontal, 16)
-                            .padding(.top, 24)
+                            .padding(.top, 12)
                             .padding(.bottom, 4)
-                        
-                        Button(action: createNewNote) {
-                            HStack(spacing: 10) {
-                                ZRectangleIcon(icon: "plus", isSelected: false)
-                                Text(queryBuffer.isEmpty ? "Create New Note" : "Create \"\(queryBuffer)\"")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(Theme.text)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Spacer()
-                                Text("Cmd+N")
-                                    .font(.system(size: 8))
-                                    .foregroundColor(Theme.textMuted)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 2)
-                            .background(Color.clear)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 4)
-                        
 
+                        if let firstNote = filteredNotes.first {
+                            NoteRowView(
+                                note: firstNote,
+                                isSelected: selectedNoteID == firstNote.id,
+                                contentPreviewText: contentPreviewCache[firstNote.id] ?? firstNote.plainTextCache,
+                                showsPinBadge: firstNote.pinned
+                            )
+                            .id("top-\(firstNote.id.uuidString)")
+                            .onTapGesture {
+                                selectedNoteID = firstNote.id
+                                focus = .editor
+                            }
+                        }
                     }
-                    .padding(.bottom, 16)
+
+                    let displayPinned = pinned.filter { $0.id != topHitID }
+                    let displayRecent = recent.filter { $0.id != topHitID }
+
+                    if !displayPinned.isEmpty {
+                        Text("PINNED")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(Theme.textMuted)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 4)
+
+                        ForEach(displayPinned) { note in
+                            NoteRowView(
+                                note: note,
+                                isSelected: selectedNoteID == note.id,
+                                contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
+                                showsPinBadge: true
+                            )
+                            .id("pinned-\(note.id.uuidString)")
+                            .onTapGesture {
+                                selectedNoteID = note.id
+                                focus = .editor
+                            }
+                            .contextMenu {
+                                Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                                    Text("Unpin")
+                                    Image(systemName: "pin.slash")
+                                }
+                                Button(action: {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+                                }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+                                Divider()
+                                Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
+                            }
+                        }
+                    }
+
+                    if !displayRecent.isEmpty {
+                        Text("NOTES")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(Theme.textMuted)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 16)
+                            .padding(.bottom, 4)
+
+                        ForEach(displayRecent) { note in
+                            NoteRowView(
+                                note: note,
+                                isSelected: selectedNoteID == note.id,
+                                contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
+                                showsPinBadge: false
+                            )
+                            .id("recent-\(note.id.uuidString)")
+                            .onTapGesture {
+                                selectedNoteID = note.id
+                                focus = .editor
+                            }
+                            .contextMenu {
+                                Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                                    Text("Pin")
+                                    Image(systemName: "pin")
+                                }
+                                Button(action: {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+                                }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+                                Divider()
+                                Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
+                            }
+                        }
+                    }
+
+                    Text("ACTIONS")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Theme.textMuted)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 24)
+                        .padding(.bottom, 4)
+
+                    Button(action: createNewNote) {
+                        HStack(spacing: 10) {
+                            ZRectangleIcon(icon: "plus", isSelected: false)
+                            Text(queryBuffer.isEmpty ? "Create New Note" : "Create \"\(queryBuffer)\"")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(Theme.text)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer()
+                            Text("Cmd+N")
+                                .font(.system(size: 8))
+                                .foregroundColor(Theme.textMuted)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 2)
+                        .background(Color.clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 4)
                 }
-                .focused($focus, equals: .list)
+                .padding(.bottom, 16)
             }
+            .focused($focus, equals: .list)
         }
     }
 }
-
 struct RichTextEditorWrapper: View {
     let note: Note
     let store: NoteStore
@@ -1021,6 +1160,7 @@ struct NoteRowView: View {
     let note: Note
     let isSelected: Bool
     let contentPreviewText: String
+    let showsPinBadge: Bool
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
 
     var body: some View {
@@ -1038,7 +1178,7 @@ struct NoteRowView: View {
                     Text(timeString(from: note.updatedAt))
                         .lineLimit(1)
 
-                    if note.pinned {
+                    if showsPinBadge {
                         Text("•")
                         Image(systemName: "pin.fill")
                             .font(.system(size: 10, weight: .semibold))

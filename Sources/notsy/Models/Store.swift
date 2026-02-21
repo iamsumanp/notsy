@@ -78,10 +78,10 @@ final class NoteStore {
         let targetID = noteID ?? notes.max(by: { $0.updatedAt < $1.updatedAt })?.id
         if let targetID,
            let index = notes.firstIndex(where: { $0.id == targetID }) {
-            // Force a structural array change so Observation updates list rows immediately.
+            // Move the changed note to the top so selection + recency always match.
             var newNotes = notes
             let sameNote = newNotes.remove(at: index)
-            newNotes.insert(sameNote, at: index)
+            newNotes.insert(sameNote, at: 0)
             notes = newNotes
         } else {
             notes = notes
@@ -111,7 +111,8 @@ final class NoteStore {
         let snapshot = NotionNoteSnapshot(
             id: note.id,
             title: note.title,
-            plainText: note.plainTextCache
+            plainText: note.plainTextCache,
+            attributedContent: note.attributedContent
         )
         syncTasks[note.id]?.cancel()
         syncTasks[note.id] = Task {
@@ -157,6 +158,9 @@ final class NoteStore {
                 case .skipped:
                     notionSyncStatusIsError = false
                     notionSyncStatusMessage = nil
+                case .paused(let message):
+                    notionSyncStatusIsError = false
+                    notionSyncStatusMessage = message
                 case .failed(let message):
                     notionSyncStatusIsError = true
                     notionSyncStatusMessage = "Notion sync failed: \(message)"

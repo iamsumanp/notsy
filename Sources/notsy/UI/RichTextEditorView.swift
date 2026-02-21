@@ -14,6 +14,7 @@ class CustomTextView: NSTextView {
     private static let imageThumbnailWidth: CGFloat = 56
     private static let imageThumbnailMaxHeight: CGFloat = 34
     private var isNormalizingAttachments = false
+    private var isNormalizingListParagraphStyles = false
 
     private static func defaultParagraphStyle() -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
@@ -270,21 +271,41 @@ class CustomTextView: NSTextView {
     }
 
     override func didChangeText() {
+        normalizeListParagraphStylesIfNeeded()
         normalizeImageAttachmentsIfNeeded()
         refreshDetectedLinks()
         super.didChangeText()
     }
 
+    func normalizeListParagraphStylesIfNeeded() {
+        guard !isNormalizingListParagraphStyles else { return }
+        guard let textStorage, textStorage.length > 0 else { return }
+
+        isNormalizingListParagraphStyles = true
+        defer { isNormalizingListParagraphStyles = false }
+
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.enumerateAttribute(.paragraphStyle, in: fullRange, options: []) { value, range, _ in
+            guard let paragraph = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle else { return }
+            guard !paragraph.textLists.isEmpty else { return }
+            paragraph.textLists = []
+            textStorage.addAttribute(.paragraphStyle, value: paragraph, range: range)
+        }
+    }
+
     func refreshDetectedLinks() {
         guard let textStorage else { return }
         let fullRange = NSRange(location: 0, length: textStorage.length)
-        textStorage.removeAttribute(.link, range: fullRange)
 
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return }
         let text = textStorage.string
         detector.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
             guard let match, let url = match.url else { return }
-            textStorage.addAttribute(.link, value: url, range: match.range)
+            // Preserve custom anchor links; only auto-apply where no link exists yet.
+            let hasLink = textStorage.attribute(.link, at: match.range.location, effectiveRange: nil) != nil
+            if !hasLink {
+                textStorage.addAttribute(.link, value: url, range: match.range)
+            }
         }
     }
 
@@ -514,6 +535,7 @@ struct RichTextEditorView: NSViewRepresentable {
         context.coordinator.textView = textView
         textView.delegate = context.coordinator
         textView.textStorage?.setAttributedString(note.stringRepresentation)
+        textView.normalizeListParagraphStylesIfNeeded()
         textView.refreshDetectedLinks()
         textView.normalizeImageAttachmentsIfNeeded()
         textView.resetTypingAttributesForCurrentSelection()
@@ -540,6 +562,7 @@ struct RichTextEditorView: NSViewRepresentable {
 
             textView.textStorage?.setAttributedString(note.stringRepresentation)
             if let customTextView = textView as? CustomTextView {
+                customTextView.normalizeListParagraphStylesIfNeeded()
                 customTextView.refreshDetectedLinks()
                 customTextView.normalizeImageAttachmentsIfNeeded()
             }
@@ -570,6 +593,7 @@ struct RichTextEditorView: NSViewRepresentable {
             super.init()
             NotificationCenter.default.addObserver(self, selector: #selector(handleToolbarAction(_:)), name: NSNotification.Name("NotsyToolbarAction"), object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(handleEditorFindAction(_:)), name: NSNotification.Name("NotsyEditorFindAction"), object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleApplyLinkEditor(_:)), name: NSNotification.Name("NotsyApplyLinkEditor"), object: nil)
         }
         
         deinit {
@@ -624,6 +648,8 @@ struct RichTextEditorView: NSViewRepresentable {
                 applyFontSize(delta: 1)
             } else if action == "font-size-default" {
                 applyFontSize(defaultSize: CustomTextView.editorFontSize)
+            } else if action == "link" {
+                openLinkEditor()
             } else if action == "color-white" {
                 applyTextColor(.white)
             } else if action == "color-yellow" {
@@ -657,6 +683,14 @@ struct RichTextEditorView: NSViewRepresentable {
             default:
                 break
             }
+        }
+
+        @objc func handleApplyLinkEditor(_ notification: Notification) {
+            guard let textView = self.textView,
+                  textView.window?.isKeyWindow == true else { return }
+            let text = (notification.userInfo?["text"] as? String) ?? ""
+            let url = (notification.userInfo?["url"] as? String) ?? ""
+            applyHyperlink(text: text, url: url)
         }
 
         private func updateFindQuery(_ query: String) {
@@ -732,6 +766,83 @@ struct RichTextEditorView: NSViewRepresentable {
             }
             textView.typingAttributes[.foregroundColor] = color
             saveState()
+        }
+
+        private func openLinkEditor() {
+            guard let textView = self.textView else { return }
+
+            let selected = textView.selectedRange()
+            let nsText = textView.string as NSString
+            let selectedText: String = {
+                guard selected.length > 0,
+                      selected.location + selected.length <= nsText.length else { return "" }
+                return nsText.substring(with: selected)
+            }()
+            let existingLink: String = {
+                guard selected.location < nsText.length,
+                      let value = textView.textStorage?.attribute(.link, at: selected.location, effectiveRange: nil) else { return "" }
+                if let url = value as? URL { return url.absoluteString }
+                if let string = value as? String { return string }
+                return ""
+            }()
+
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotsyOpenLinkEditor"),
+                object: nil,
+                userInfo: ["text": selectedText, "url": existingLink]
+            )
+        }
+
+        private func applyHyperlink(text: String, url: String) {
+            guard let textView = self.textView,
+                  let normalizedURL = normalizedURL(from: url) else { return }
+            let selected = textView.selectedRange()
+            let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if selected.length > 0 {
+                if !trimmedText.isEmpty {
+                    let attrs: [NSAttributedString.Key: Any] = [
+                        .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular),
+                        .foregroundColor: (textView.typingAttributes[.foregroundColor] as? NSColor) ?? Theme.editorTextNSColor,
+                        .link: normalizedURL
+                    ]
+                    let attributed = NSAttributedString(string: trimmedText, attributes: attrs)
+                    textView.textStorage?.replaceCharacters(in: selected, with: attributed)
+                    textView.setSelectedRange(NSRange(location: selected.location + trimmedText.utf16.count, length: 0))
+                } else {
+                    textView.textStorage?.addAttribute(.link, value: normalizedURL, range: selected)
+                }
+            } else {
+                let anchor = trimmedText.isEmpty ? anchorText(from: normalizedURL) : trimmedText
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular),
+                    .foregroundColor: (textView.typingAttributes[.foregroundColor] as? NSColor) ?? Theme.editorTextNSColor,
+                    .link: normalizedURL
+                ]
+                let attributed = NSAttributedString(string: anchor, attributes: attrs)
+                textView.textStorage?.replaceCharacters(in: selected, with: attributed)
+                textView.setSelectedRange(NSRange(location: selected.location + anchor.utf16.count, length: 0))
+            }
+
+            saveState()
+        }
+
+        private func normalizedURL(from value: String) -> URL? {
+            guard !value.isEmpty else { return nil }
+            if let direct = URL(string: value), direct.scheme != nil {
+                return direct
+            }
+            return URL(string: "https://\(value)")
+        }
+
+        private func anchorText(from url: URL) -> String {
+            guard let host = url.host, !host.isEmpty else { return url.absoluteString }
+            let withoutWWW = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            let parts = withoutWWW.split(separator: ".")
+            if let first = parts.first, !first.isEmpty {
+                return String(first)
+            }
+            return withoutWWW
         }
 
         private func toggleStrikethrough() {
