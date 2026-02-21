@@ -24,16 +24,18 @@ struct MainPanel: View {
     @State private var selectedNoteID: UUID?
     @State private var editorState = EditorState()
     @State private var showColorPalette = false
-    @State private var activeEditorColor = NSColor.white
+    @State private var activeEditorColor = Theme.editorTextNSColor
     @State private var previewImage: NSImage?
     @State private var showEditorFind = false
     @State private var editorFindQuery = ""
+    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
     @AppStorage("notsy.sidebar.width") private var sidebarWidth: Double = 300
     @AppStorage("notsy.sidebar.collapsed") private var sidebarCollapsed: Bool = false
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var sidebarRuntimeWidth: CGFloat = 300
     @State private var sidebarResizeHovering = false
     @State private var sidebarContentPreviewCache: [UUID: String] = [:]
+    @State private var autoExpandedSidebarForSearch = false
 
     enum FocusField: Hashable {
         case search
@@ -57,8 +59,26 @@ struct MainPanel: View {
         }
     }
 
+    private var navigableNotes: [Note] {
+        let pinned = filteredNotes.filter { $0.pinned }
+        let recent = filteredNotes.filter { !$0.pinned }
+
+        if queryBuffer.isEmpty {
+            return pinned + recent
+        }
+
+        guard let topHit = filteredNotes.first else { return [] }
+        let pinnedWithoutTop = pinned.filter { $0.id != topHit.id }
+        let recentWithoutTop = recent.filter { $0.id != topHit.id }
+        return [topHit] + pinnedWithoutTop + recentWithoutTop
+    }
+
     private var isSearchCompact: Bool {
         focus == .editor || focus == .title || focus == .find
+    }
+
+    private var selectedThemeVariant: NotsyThemeVariant {
+        NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish
     }
 
     var body: some View {
@@ -75,10 +95,16 @@ struct MainPanel: View {
                     .foregroundColor(Theme.text)
                     .focused($focus, equals: .search)
                     .onChange(of: queryBuffer) { oldVal, newVal in
-                        if focus == .search, sidebarCollapsed {
-                            withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
+                        if focus == .search {
+                            if !newVal.isEmpty && sidebarCollapsed {
+                                autoExpandedSidebarForSearch = true
+                                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
+                            } else if newVal.isEmpty && autoExpandedSidebarForSearch {
+                                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = true }
+                                autoExpandedSidebarForSearch = false
+                            }
                         }
-                        if !newVal.isEmpty, let first = filteredNotes.first {
+                        if !newVal.isEmpty, let first = navigableNotes.first {
                             if selectedNoteID != first.id {
                                 selectedNoteID = first.id
                             }
@@ -125,13 +151,18 @@ struct MainPanel: View {
                         .frame(width: clampedSidebarWidth)
                         .background(Theme.sidebarBg)
 
-                        Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = true } }) {
-                            Image(systemName: "sidebar.left")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(Theme.textMuted)
-                                .frame(width: 24, height: 24)
+                        HStack(spacing: 6) {
+                            Text("Cmd+/")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(Theme.textMuted.opacity(0.8))
+                            Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = true } }) {
+                                Image(systemName: "sidebar.left")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(Theme.textMuted)
+                                    .frame(width: 24, height: 24)
+                            }
+                            .buttonStyle(PointerPlainButtonStyle())
                         }
-                        .buttonStyle(PointerPlainButtonStyle())
                         .padding(.top, 8)
                         .padding(.trailing, 8)
                     }
@@ -347,7 +378,7 @@ struct MainPanel: View {
         .frame(width: 950, height: 650)
         .background(Theme.sidebarBg)
         .edgesIgnoringSafeArea(.all)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(Theme.palette(for: selectedThemeVariant).preferredColorScheme)
         .overlay {
             if let previewImage {
                 ZStack {
@@ -398,13 +429,16 @@ struct MainPanel: View {
             }
         }
         .onReceive(focusSearchPub) { _ in focus = .search }
+        .onChange(of: themeVariantRaw) { _, _ in
+            activeEditorColor = Theme.editorTextNSColor
+        }
         .onChange(of: focus) { _, newFocus in
-            if newFocus == .search, sidebarCollapsed {
-                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
-            }
             // Global search should be transient: when search loses focus, restore full list.
             if newFocus != .search && !queryBuffer.isEmpty {
                 queryBuffer = ""
+            }
+            if newFocus != .search {
+                autoExpandedSidebarForSearch = false
             }
         }
         .onChange(of: selectedNoteID) { _, _ in
@@ -454,9 +488,6 @@ struct MainPanel: View {
         }
         // Cmd + Shift + F -> Global search
         if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 3 {
-            if sidebarCollapsed {
-                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
-            }
             focus = .search
             return nil
         }
@@ -518,16 +549,16 @@ struct MainPanel: View {
     }
 
     private func moveSearchSelection(delta: Int) {
-        guard !filteredNotes.isEmpty else { return }
+        guard !navigableNotes.isEmpty else { return }
 
         if let selectedNoteID,
-           let currentIndex = filteredNotes.firstIndex(where: { $0.id == selectedNoteID }) {
-            let nextIndex = max(0, min(filteredNotes.count - 1, currentIndex + delta))
-            self.selectedNoteID = filteredNotes[nextIndex].id
+           let currentIndex = navigableNotes.firstIndex(where: { $0.id == selectedNoteID }) {
+            let nextIndex = max(0, min(navigableNotes.count - 1, currentIndex + delta))
+            self.selectedNoteID = navigableNotes[nextIndex].id
             return
         }
 
-        self.selectedNoteID = filteredNotes[delta >= 0 ? 0 : filteredNotes.count - 1].id
+        self.selectedNoteID = navigableNotes[delta >= 0 ? 0 : navigableNotes.count - 1].id
     }
 
     private func handleSearchSubmit() {
@@ -542,7 +573,7 @@ struct MainPanel: View {
         let initialTitle = hasQuery ? capitalizeFirstCharacter(queryBuffer) : ""
         let newNote = Note(title: initialTitle, plainTextCache: "", createdAt: Date(), updatedAt: Date())
 
-        let attrStr = NSAttributedString(string: "", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .foregroundColor: NSColor.white])
+        let attrStr = NSAttributedString(string: "", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .foregroundColor: Theme.editorTextNSColor])
         newNote.update(with: attrStr)
         store.insert(newNote)
         queryBuffer = ""
@@ -617,6 +648,18 @@ struct MainPanel: View {
 
             Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-mono"]) }) {
                 Text("M").font(.system(size: 10, weight: .semibold, design: .monospaced)).frame(width: 20, height: 20).background(Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-size-down"]) }) {
+                Text("A-").font(.system(size: 10, weight: .semibold)).frame(width: 22, height: 20).background(Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-size-default"]) }) {
+                Text("A").font(.system(size: 10, weight: .semibold)).frame(width: 16, height: 20).background(Color.clear).cornerRadius(4)
+            }.buttonStyle(PointerPlainButtonStyle())
+
+            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-size-up"]) }) {
+                Text("A+").font(.system(size: 10, weight: .semibold)).frame(width: 22, height: 20).background(Color.clear).cornerRadius(4)
             }.buttonStyle(PointerPlainButtonStyle())
 
             Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
@@ -841,9 +884,16 @@ struct RichTextEditorWrapper: View {
     let store: NoteStore
     @Binding var editorState: EditorState
     @FocusState var isFocused: MainPanel.FocusField?
+    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
 
     var body: some View {
-        RichTextEditorView(note: note, store: store, editorState: $editorState).focused($isFocused, equals: .editor)
+        RichTextEditorView(
+            note: note,
+            store: store,
+            editorState: $editorState,
+            themeVariantRaw: themeVariantRaw
+        )
+        .focused($isFocused, equals: .editor)
     }
 }
 

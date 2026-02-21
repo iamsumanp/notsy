@@ -19,6 +19,7 @@ struct PreferencesView: View {
     @State private var notionMessage: String?
     @State private var isAwaitingOAuthCallback = false
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
+    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
 
     init() {
         let shortcut = GlobalHotkeyManager.shared.currentShortcut
@@ -411,6 +412,13 @@ struct PreferencesView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Appearance")
                         .font(.subheadline)
+
+                    Picker("Editor Theme", selection: $themeVariantRaw) {
+                        ForEach(NotsyThemeVariant.allCases, id: \.rawValue) { variant in
+                            Text(variant.label).tag(variant.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
                     Picker("Selection Highlight", selection: $selectionColorChoice) {
                         Text("Blue").tag("blue")

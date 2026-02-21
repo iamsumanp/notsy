@@ -23,7 +23,7 @@ class CustomTextView: NSTextView {
 
     private func normalizedTypingAttributes(base: [NSAttributedString.Key: Any]? = nil) -> [NSAttributedString.Key: Any] {
         var attrs = base ?? typingAttributes
-        attrs[.foregroundColor] = NSColor.white
+        attrs[.foregroundColor] = Theme.editorTextNSColor
         if attrs[.font] == nil {
             attrs[.font] = NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
         }
@@ -62,10 +62,13 @@ class CustomTextView: NSTextView {
         mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
             var normalized = attrs
 
+            // Drop source background highlights so paste matches editor surface.
+            normalized.removeValue(forKey: .backgroundColor)
+
             if attrs[.attachment] == nil {
                 let sourceFont = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: Self.editorFontSize)
                 normalized[.font] = monospacedFontPreservingTraits(from: sourceFont)
-                normalized[.foregroundColor] = NSColor.white
+                normalized[.foregroundColor] = Theme.editorTextNSColor
             }
 
             let paragraph = ((attrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle)
@@ -108,6 +111,49 @@ class CustomTextView: NSTextView {
         let cursor = max(0, min(selectedRange().location, textStorage.length - 1))
         let attrs = textStorage.attributes(at: cursor, effectiveRange: nil)
         typingAttributes = normalizedTypingAttributes(base: attrs)
+    }
+
+    func applyThemeTextColorTransition(from oldColor: NSColor?, to newColor: NSColor) {
+        guard let textStorage else {
+            typingAttributes[.foregroundColor] = newColor
+            insertionPointColor = newColor
+            return
+        }
+        guard let oldColor else {
+            typingAttributes[.foregroundColor] = newColor
+            insertionPointColor = newColor
+            return
+        }
+
+        let full = NSRange(location: 0, length: textStorage.length)
+        textStorage.enumerateAttribute(.foregroundColor, in: full, options: []) { value, range, _ in
+            guard let current = value as? NSColor else { return }
+            if self.shouldAutoThemeRecolor(current: current, oldThemeColor: oldColor) {
+                textStorage.addAttribute(.foregroundColor, value: newColor, range: range)
+            }
+        }
+        typingAttributes[.foregroundColor] = newColor
+        insertionPointColor = newColor
+    }
+
+    private func areColorsEquivalent(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let l = lhs.usingColorSpace(.deviceRGB), let r = rhs.usingColorSpace(.deviceRGB) else { return false }
+        let tolerance: CGFloat = 0.02
+        return abs(l.redComponent - r.redComponent) <= tolerance &&
+               abs(l.greenComponent - r.greenComponent) <= tolerance &&
+               abs(l.blueComponent - r.blueComponent) <= tolerance &&
+               abs(l.alphaComponent - r.alphaComponent) <= tolerance
+    }
+
+    private func shouldAutoThemeRecolor(current: NSColor, oldThemeColor: NSColor) -> Bool {
+        if areColorsEquivalent(current, oldThemeColor) {
+            return true
+        }
+        // Legacy default before themes was pure white; convert it during theme changes too.
+        if areColorsEquivalent(current, .white) {
+            return true
+        }
+        return false
     }
 
     override func paste(_ sender: Any?) {
@@ -192,29 +238,29 @@ class CustomTextView: NSTextView {
                         textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: greenDot)
                         // Force the space immediately after the dot to be white so typing inherits white
                         if circleLocation + 1 < textStorage.length {
-                            textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: 1))
+                            textStorage.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: circleLocation + 1, length: 1))
                         }
                         self.didChangeText()
                     }
                     self.undoManager?.endUndoGrouping()
-                    self.typingAttributes[.foregroundColor] = NSColor.white
+                    self.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
                     if let delegate = self.delegate as? RichTextEditorView.Coordinator { delegate.saveState() }
                     return
                 } else if trimmed.hasPrefix("◉ ") {
                     self.undoManager?.beginUndoGrouping()
                     let whiteCircle = NSAttributedString(string: "○", attributes: [
                         .font: NSFont.systemFont(ofSize: Self.editorFontSize),
-                        .foregroundColor: NSColor.white
+                        .foregroundColor: Theme.editorTextNSColor
                     ])
                     if let textStorage = self.textStorage {
                         textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: whiteCircle)
                         if circleLocation + 1 < textStorage.length {
-                            textStorage.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: circleLocation + 1, length: 1))
+                            textStorage.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: circleLocation + 1, length: 1))
                         }
                         self.didChangeText()
                     }
                     self.undoManager?.endUndoGrouping()
-                    self.typingAttributes[.foregroundColor] = NSColor.white
+                    self.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
                     if let delegate = self.delegate as? RichTextEditorView.Coordinator { delegate.saveState() }
                     return
                 }
@@ -424,6 +470,11 @@ struct RichTextEditorView: NSViewRepresentable {
     var note: Note
     var store: NoteStore
     @Binding var editorState: EditorState
+    var themeVariantRaw: String
+
+    private var themeEditorTextColor: NSColor {
+        Theme.palette(for: NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish).editorText
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -440,7 +491,7 @@ struct RichTextEditorView: NSViewRepresentable {
         textView.isRichText = true
         textView.importsGraphics = true
         textView.isContinuousSpellCheckingEnabled = true
-        textView.insertionPointColor = .white
+        textView.insertionPointColor = themeEditorTextColor
         textView.drawsBackground = false
         textView.usesFontPanel = true
         textView.usesRuler = true
@@ -449,7 +500,7 @@ struct RichTextEditorView: NSViewRepresentable {
         defaultStyle.lineSpacing = 4
         textView.typingAttributes = [
             .font: NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular),
-            .foregroundColor: NSColor.white,
+            .foregroundColor: themeEditorTextColor,
             .paragraphStyle: defaultStyle
         ]
 
@@ -466,6 +517,7 @@ struct RichTextEditorView: NSViewRepresentable {
         textView.refreshDetectedLinks()
         textView.normalizeImageAttachmentsIfNeeded()
         textView.resetTypingAttributesForCurrentSelection()
+        context.coordinator.lastAppliedEditorTextColor = themeEditorTextColor
         context.coordinator.currentNoteID = note.id
 
         return scrollView
@@ -476,6 +528,11 @@ struct RichTextEditorView: NSViewRepresentable {
 
         // ALWAYS update the parent reference so text changes apply to the active Note!
         context.coordinator.parent = self
+        if let customTextView = textView as? CustomTextView {
+            let newThemeTextColor = themeEditorTextColor
+            customTextView.applyThemeTextColorTransition(from: context.coordinator.lastAppliedEditorTextColor, to: newThemeTextColor)
+            context.coordinator.lastAppliedEditorTextColor = newThemeTextColor
+        }
 
         if context.coordinator.currentNoteID != note.id {
             context.coordinator.isUpdating = true
@@ -503,6 +560,7 @@ struct RichTextEditorView: NSViewRepresentable {
         var currentNoteID: UUID?
         var isUpdating = false
         weak var textView: NSTextView?
+        var lastAppliedEditorTextColor: NSColor = Theme.editorTextNSColor
         private var findQuery: String = ""
         private var findMatches: [NSRange] = []
         private var currentFindIndex: Int = -1
@@ -560,6 +618,12 @@ struct RichTextEditorView: NSViewRepresentable {
                 applyFontStyle(.serif)
             } else if action == "font-mono" {
                 applyFontStyle(.mono)
+            } else if action == "font-size-down" {
+                applyFontSize(delta: -1)
+            } else if action == "font-size-up" {
+                applyFontSize(delta: 1)
+            } else if action == "font-size-default" {
+                applyFontSize(defaultSize: CustomTextView.editorFontSize)
             } else if action == "color-white" {
                 applyTextColor(.white)
             } else if action == "color-yellow" {
@@ -721,6 +785,31 @@ struct RichTextEditorView: NSViewRepresentable {
             }
             return updated
         }
+
+        private func applyFontSize(delta: CGFloat? = nil, defaultSize: CGFloat? = nil) {
+            guard let textView = self.textView else { return }
+            let selected = textView.selectedRange()
+
+            func resized(_ font: NSFont) -> NSFont {
+                let currentSize = font.pointSize
+                let target = defaultSize ?? max(11, min(28, currentSize + (delta ?? 0)))
+                return NSFont(descriptor: font.fontDescriptor, size: target) ?? font
+            }
+
+            if selected.length > 0, let textStorage = textView.textStorage {
+                textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                    let current = (value as? NSFont)
+                        ?? (textView.typingAttributes[.font] as? NSFont)
+                        ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular)
+                    textStorage.addAttribute(.font, value: resized(current), range: range)
+                }
+            } else {
+                let current = (textView.typingAttributes[.font] as? NSFont)
+                    ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular)
+                textView.typingAttributes[.font] = resized(current)
+            }
+            saveState()
+        }
         
         func saveState() {
             guard let textView = self.textView else { return }
@@ -784,7 +873,7 @@ struct RichTextEditorView: NSViewRepresentable {
             
             // Prevent checkbox marker green from becoming typing color.
             if let fgColor = textView.typingAttributes[.foregroundColor] as? NSColor, fgColor == NSColor.systemGreen {
-                textView.typingAttributes[.foregroundColor] = NSColor.white
+                textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
             }
             
             textView.undoManager?.endUndoGrouping()
@@ -795,7 +884,7 @@ struct RichTextEditorView: NSViewRepresentable {
             guard !isUpdating, let textView = notification.object as? NSTextView else { return }
             // Prevent checked-checkbox green from leaking into newly typed text.
             if let fgColor = textView.typingAttributes[.foregroundColor] as? NSColor, fgColor == NSColor.systemGreen {
-                textView.typingAttributes[.foregroundColor] = NSColor.white
+                textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
             }
             parent.note.update(with: textView.attributedString())
             if !findQuery.isEmpty {
@@ -803,18 +892,24 @@ struct RichTextEditorView: NSViewRepresentable {
             }
             var didAutoUpdateTitle = false
             if parent.note.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let firstLine = parent.note.plainTextCache
-                    .split(separator: "\n")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .first(where: { !$0.isEmpty }) ?? ""
-                if !firstLine.isEmpty {
-                    parent.store.updateTitle(noteID: parent.note.id, title: String(firstLine.prefix(120)))
+                let hasContent = !parent.note.plainTextCache.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if hasContent {
+                    parent.store.updateTitle(noteID: parent.note.id, title: randomSmartTitle())
                     didAutoUpdateTitle = true
                 }
             }
             if !didAutoUpdateTitle {
                 parent.store.saveNoteChanges(noteID: parent.note.id)
             }
+        }
+
+        private func randomSmartTitle() -> String {
+            let adjectives = ["Quick", "Fresh", "Bright", "Sharp", "Calm", "Bold", "Daily", "Focused", "Neat", "Swift"]
+            let nouns = ["Note", "Idea", "Draft", "Memo", "Plan", "Thought", "List", "Outline", "Snippet", "Entry"]
+            let adjective = adjectives.randomElement() ?? "Quick"
+            let noun = nouns.randomElement() ?? "Note"
+            let suffix = Int.random(in: 100...999)
+            return "\(adjective) \(noun) \(suffix)"
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -825,7 +920,7 @@ struct RichTextEditorView: NSViewRepresentable {
         func updateFormattingState(for textView: NSTextView) {
             // Aggressively prevent green text inheritance when moving cursor
             if let fgColor = textView.typingAttributes[.foregroundColor] as? NSColor, fgColor == NSColor.systemGreen {
-                textView.typingAttributes[.foregroundColor] = NSColor.white
+                textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
             }
             
             var attrs: [NSAttributedString.Key: Any]
@@ -996,7 +1091,7 @@ struct RichTextEditorView: NSViewRepresentable {
                     // If it's a green checked dot we need to make sure the newly inserted one is white
                     let newCursor = textView.selectedRange()
                     if prefixToContinue == "○ " {
-                        textView.textStorage?.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: newCursor.location - 2, length: 1))
+                        textView.textStorage?.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: newCursor.location - 2, length: 1))
                     }
                     
                     textView.undoManager?.endUndoGrouping()
