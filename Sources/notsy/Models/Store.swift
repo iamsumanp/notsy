@@ -6,6 +6,7 @@ final class NoteStore {
     var notes: [Note] = []
 
     private let saveURL: URL
+    private var syncTasks: [UUID: Task<Void, Never>] = [:]
 
     init() {
         let paths = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -35,11 +36,14 @@ final class NoteStore {
     func insert(_ note: Note) {
         notes.insert(note, at: 0)
         save()
+        scheduleNotionSync(for: note)
     }
 
     func delete(_ note: Note) {
         notes.removeAll { $0.id == note.id }
         save()
+        syncTasks[note.id]?.cancel()
+        syncTasks.removeValue(forKey: note.id)
     }
 
     func togglePin(for note: Note) {
@@ -52,6 +56,7 @@ final class NoteStore {
             newNotes.insert(oldNote, at: index)
             notes = newNotes
             save()
+            scheduleNotionSync(for: notes[index])
         }
     }
 
@@ -60,11 +65,30 @@ final class NoteStore {
         notes = sorted
     }
 
-    func saveNoteChanges() {
+    func saveNoteChanges(noteID: UUID? = nil) {
         // Trigger SwiftUI update explicitly without sorting!
         // Sorting while actively typing causes indices to shift and overwrites the wrong file.
-        var newNotes = notes
+        let newNotes = notes
         notes = newNotes
         save()
+
+        let targetID = noteID ?? notes.max(by: { $0.updatedAt < $1.updatedAt })?.id
+        guard let targetID,
+              let note = notes.first(where: { $0.id == targetID }) else { return }
+        scheduleNotionSync(for: note)
+    }
+
+    private func scheduleNotionSync(for note: Note) {
+        let snapshot = NotionNoteSnapshot(
+            id: note.id,
+            title: note.title,
+            plainText: note.plainTextCache
+        )
+        syncTasks[note.id]?.cancel()
+        syncTasks[note.id] = Task {
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            await NotionSyncService.shared.sync(note: snapshot)
+        }
     }
 }

@@ -97,22 +97,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func toggleWindow() {
         if panel.isVisible {
-            hideWindow()
+            // If the panel is visible on a different display, move it instead of requiring a second key press.
+            if shouldMoveVisiblePanelToActiveScreen() {
+                showWindow()
+            } else {
+                hideWindow()
+            }
         } else {
             showWindow()
         }
     }
 
     func showWindow() {
-        if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) {
+        if let screen = activeMouseScreen() {
             let x = screen.frame.origin.x + (screen.frame.width - panel.frame.width) / 2
             let y = screen.frame.origin.y + (screen.frame.height - panel.frame.height) / 2
             panel.setFrameOrigin(NSPoint(x: x, y: y))
         } else {
             panel.center()
         }
-        panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
         NotificationCenter.default.post(name: NSNotification.Name("NotsyOpened"), object: nil)
     }
 
@@ -144,15 +149,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.title = "Notsy Preferences"
             window.center()
             window.isReleasedWhenClosed = false
+            window.level = .modalPanel
             window.contentView = NSHostingView(rootView: prefsView)
             self.prefsWindow = window
         }
         
+        prefsWindow?.orderFrontRegardless()
         prefsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func quitAction() {
         NSApp.terminate(nil)
+    }
+
+    private func activeMouseScreen() -> NSScreen? {
+        NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+    }
+
+    private func shouldMoveVisiblePanelToActiveScreen() -> Bool {
+        guard let activeScreen = activeMouseScreen() else { return false }
+        let panelCenter = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        guard let panelScreen = NSScreen.screens.first(where: { $0.frame.contains(panelCenter) }) else {
+            return true
+        }
+        return panelScreen.frame != activeScreen.frame
     }
 }

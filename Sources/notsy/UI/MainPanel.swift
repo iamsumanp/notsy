@@ -180,7 +180,7 @@ struct MainPanel: View {
                                     if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
                                         store.notes[idx].title = newValue
                                         store.notes[idx].updatedAt = Date()
-                                        store.saveNoteChanges()
+                                        store.saveNoteChanges(noteID: store.notes[idx].id)
                                     }
                                 }
                             ))

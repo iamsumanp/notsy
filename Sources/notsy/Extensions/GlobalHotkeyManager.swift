@@ -1,6 +1,16 @@
 import Carbon
 import Cocoa
 
+struct HotkeyShortcut: Codable, Equatable {
+    let keyCode: UInt32
+    let modifiers: UInt32
+
+    static let `default` = HotkeyShortcut(
+        keyCode: 49,  // Space
+        modifiers: UInt32(cmdKey | shiftKey)
+    )
+}
+
 // C-compatible function for Carbon Event Handler
 private func hotKeyHandler(
     nextHandler: EventHandlerCallRef?, theEvent: EventRef?, userData: UnsafeMutableRawPointer?
@@ -13,28 +23,41 @@ class GlobalHotkeyManager {
     static let shared = GlobalHotkeyManager()
 
     var action: (() -> Void)?
+
+    private(set) var currentShortcut: HotkeyShortcut
     private var hotKeyRef: EventHotKeyRef?
+    private var eventHandlerInstalled = false
+    private let defaultsKey = "NotsyGlobalHotkey"
 
     private init() {
+        currentShortcut = Self.loadShortcutFromDefaults() ?? .default
         setupHotKey()
     }
 
     private func setupHotKey() {
-        // ----------------------------------------------------------------------
-        // 🔧 WHERE TO MODIFY HOTKEY
-        // ----------------------------------------------------------------------
-        // Default: Command + Shift + Space
-        //
-        // Common KeyCodes:
-        // Space = 49, Return = 36, Esc = 53, N = 45
-        //
-        // Common Modifiers:
-        // cmdKey, shiftKey, optionKey, controlKey
-        // Combine them with bitwise OR (|)
-        // ----------------------------------------------------------------------
-        let keyCode: UInt32 = 49  // Space
-        let modifiers: UInt32 = UInt32(cmdKey | shiftKey)
+        installEventHandlerIfNeeded()
+        _ = registerHotKey(currentShortcut)
+    }
 
+    @discardableResult
+    func updateShortcut(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        let newShortcut = HotkeyShortcut(keyCode: keyCode, modifiers: modifiers)
+        guard newShortcut != currentShortcut else { return true }
+
+        let oldShortcut = currentShortcut
+        unregisterCurrentHotKey()
+        if registerHotKey(newShortcut) {
+            currentShortcut = newShortcut
+            saveShortcutToDefaults(newShortcut)
+            return true
+        }
+
+        _ = registerHotKey(oldShortcut)
+        return false
+    }
+
+    private func installEventHandlerIfNeeded() {
+        guard !eventHandlerInstalled else { return }
         var hotKeyID = EventHotKeyID()
         hotKeyID.signature = OSType(fourCharCode("NTBR"))
         hotKeyID.id = 1
@@ -44,9 +67,47 @@ class GlobalHotkeyManager {
         eventType.eventKind = OSType(kEventHotKeyPressed)
 
         InstallEventHandler(GetApplicationEventTarget(), hotKeyHandler, 1, &eventType, nil, nil)
+        eventHandlerInstalled = true
+    }
 
-        RegisterEventHotKey(
-            keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+    @discardableResult
+    private func registerHotKey(_ shortcut: HotkeyShortcut) -> Bool {
+        var hotKeyID = EventHotKeyID()
+        hotKeyID.signature = OSType(fourCharCode("NTBR"))
+        hotKeyID.id = 1
+
+        var registeredRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            shortcut.keyCode,
+            shortcut.modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &registeredRef
+        )
+        guard status == noErr else { return false }
+        hotKeyRef = registeredRef
+        return true
+    }
+
+    private func unregisterCurrentHotKey() {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+        }
+    }
+
+    private static func loadShortcutFromDefaults() -> HotkeyShortcut? {
+        guard let data = UserDefaults.standard.data(forKey: "NotsyGlobalHotkey"),
+              let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data) else {
+            return nil
+        }
+        return shortcut
+    }
+
+    private func saveShortcutToDefaults(_ shortcut: HotkeyShortcut) {
+        guard let data = try? JSONEncoder().encode(shortcut) else { return }
+        UserDefaults.standard.set(data, forKey: defaultsKey)
     }
 
     private func fourCharCode(_ string: String) -> UInt32 {

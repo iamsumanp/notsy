@@ -191,7 +191,7 @@ struct RichTextEditorView: NSViewRepresentable {
             guard let textView = self.textView else { return }
             updateFormattingState(for: textView)
             parent.note.update(with: textView.attributedString())
-            parent.store.saveNoteChanges()
+            parent.store.saveNoteChanges(noteID: parent.note.id)
         }
         
         func toggleList(isCheckbox: Bool) {
@@ -257,7 +257,7 @@ struct RichTextEditorView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard !isUpdating, let textView = notification.object as? NSTextView else { return }
             parent.note.update(with: textView.attributedString())
-            parent.store.saveNoteChanges()
+            parent.store.saveNoteChanges(noteID: parent.note.id)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
