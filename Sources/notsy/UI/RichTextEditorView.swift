@@ -594,6 +594,7 @@ struct RichTextEditorView: NSViewRepresentable {
             NotificationCenter.default.addObserver(self, selector: #selector(handleToolbarAction(_:)), name: NSNotification.Name("NotsyToolbarAction"), object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(handleEditorFindAction(_:)), name: NSNotification.Name("NotsyEditorFindAction"), object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(handleApplyLinkEditor(_:)), name: NSNotification.Name("NotsyApplyLinkEditor"), object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(handleAppOpened(_:)), name: NSNotification.Name("NotsyOpened"), object: nil)
         }
         
         deinit {
@@ -691,6 +692,21 @@ struct RichTextEditorView: NSViewRepresentable {
             let text = (notification.userInfo?["text"] as? String) ?? ""
             let url = (notification.userInfo?["url"] as? String) ?? ""
             applyHyperlink(text: text, url: url)
+        }
+
+        @objc func handleAppOpened(_ notification: Notification) {
+            guard let textView = self.textView else { return }
+            DispatchQueue.main.async {
+                let range = textView.selectedRange()
+                guard range.length > 0 else { return }
+                let length = (textView.string as NSString).length
+                let location = min(length, range.location + range.length)
+                textView.setSelectedRange(NSRange(location: location, length: 0))
+                if let customTextView = textView as? CustomTextView {
+                    customTextView.resetTypingAttributesForCurrentSelection()
+                }
+                self.updateFormattingState(for: textView)
+            }
         }
 
         private func updateFindQuery(_ query: String) {
