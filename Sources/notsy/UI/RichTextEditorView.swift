@@ -1267,7 +1267,17 @@ struct RichTextEditorView: NSViewRepresentable {
             }
             
             DispatchQueue.main.async {
-                let newState = EditorState(isBold: isBold, isItalic: isItalic, isUnderline: isUnderline, isStrikethrough: isStrikethrough, isBullet: isBullet, isCheckbox: isCheckbox, fontStyle: fontStyle)
+                let hasSelection = textView.selectedRange().length > 0
+                let newState = EditorState(
+                    isBold: isBold,
+                    isItalic: isItalic,
+                    isUnderline: isUnderline,
+                    isStrikethrough: isStrikethrough,
+                    isBullet: isBullet,
+                    isCheckbox: isCheckbox,
+                    fontStyle: fontStyle,
+                    hasSelection: hasSelection
+                )
                 if self.parent.editorState != newState {
                     self.parent.editorState = newState
                 }

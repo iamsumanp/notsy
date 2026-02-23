@@ -16,6 +16,7 @@ struct EditorState: Equatable {
     var isBullet: Bool = false
     var isCheckbox: Bool = false
     var fontStyle: EditorFontStyle = .mono
+    var hasSelection: Bool = false
 }
 
 struct MainPanel: View {
@@ -32,7 +33,8 @@ struct MainPanel: View {
     @State private var linkEditorURL = ""
     @State private var showEditorFind = false
     @State private var editorFindQuery = ""
-    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
+    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant
+        .bluish.rawValue
     @AppStorage("notsy.sidebar.width") private var sidebarWidth: Double = 300
     @AppStorage("notsy.sidebar.collapsed") private var sidebarCollapsed: Bool = false
     @State private var sidebarDragStartWidth: CGFloat?
@@ -52,16 +54,19 @@ struct MainPanel: View {
     @FocusState private var focus: FocusField?
 
     let newNotePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyNewNote"))
-    let focusSearchPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyFocusSearch"))
-    let previewImagePub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyPreviewImage"))
-    let openLinkEditorPub = NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpenLinkEditor"))
+    let focusSearchPub = NotificationCenter.default.publisher(
+        for: NSNotification.Name("NotsyFocusSearch"))
+    let previewImagePub = NotificationCenter.default.publisher(
+        for: NSNotification.Name("NotsyPreviewImage"))
+    let openLinkEditorPub = NotificationCenter.default.publisher(
+        for: NSNotification.Name("NotsyOpenLinkEditor"))
     private let editorFindActionNotification = NSNotification.Name("NotsyEditorFindAction")
 
     var filteredNotes: [Note] {
         if queryBuffer.isEmpty { return store.notes }
         return store.notes.filter { note in
-            note.title.localizedCaseInsensitiveContains(queryBuffer) || 
-            note.plainTextCache.localizedCaseInsensitiveContains(queryBuffer)
+            note.title.localizedCaseInsensitiveContains(queryBuffer)
+                || note.plainTextCache.localizedCaseInsensitiveContains(queryBuffer)
         }
     }
 
@@ -98,7 +103,7 @@ struct MainPanel: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: isSearchCompact ? 14 : 18))
                     .foregroundColor(Theme.textMuted)
-                
+
                 TextField("Search or command...", text: $queryBuffer)
                     .font(.system(size: isSearchCompact ? 14 : 18))
                     .textFieldStyle(.plain)
@@ -108,9 +113,13 @@ struct MainPanel: View {
                         if focus == .search {
                             if !newVal.isEmpty && sidebarCollapsed {
                                 autoExpandedSidebarForSearch = true
-                                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    sidebarCollapsed = false
+                                }
                             } else if newVal.isEmpty && autoExpandedSidebarForSearch {
-                                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = true }
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    sidebarCollapsed = true
+                                }
                                 autoExpandedSidebarForSearch = false
                             }
                         }
@@ -121,9 +130,9 @@ struct MainPanel: View {
                         }
                     }
                     .onSubmit { handleSearchSubmit() }
-                
+
                 Spacer()
-                
+
                 Text("ESC")
                     .font(.system(size: 10, weight: .bold))
                     .padding(.horizontal, 6)
@@ -144,7 +153,7 @@ struct MainPanel: View {
             .animation(.easeInOut(duration: 0.15), value: isSearchCompact)
 
             Divider().background(Theme.border)
-            
+
             // MAIN CONTENT
             HStack(spacing: 0) {
                 // LEFT PANEL (SIDEBAR)
@@ -165,7 +174,11 @@ struct MainPanel: View {
                             Text("Cmd+/")
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .foregroundColor(Theme.textMuted.opacity(0.8))
-                            Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = true } }) {
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    sidebarCollapsed = true
+                                }
+                            }) {
                                 Image(systemName: "sidebar.left")
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundColor(Theme.textMuted)
@@ -215,10 +228,11 @@ struct MainPanel: View {
                 // RIGHT PANEL (EDITOR)
                 VStack(spacing: 0) {
                     if let selectedNoteID = selectedNoteID,
-                       let noteIndex = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
-                        
+                        let noteIndex = store.notes.firstIndex(where: { $0.id == selectedNoteID })
+                    {
+
                         let note = store.notes[noteIndex]
-                        
+
                         // Title/meta + formatting controls (top section)
                         VStack(alignment: .leading, spacing: 8) {
                             titleEditor(for: note, selectedNoteID: selectedNoteID)
@@ -230,14 +244,18 @@ struct MainPanel: View {
                             VStack(alignment: .trailing, spacing: 8) {
                                 Button(action: {
                                     withAnimation(.spring()) {
-                                        if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
+                                        if let idx = store.notes.firstIndex(where: {
+                                            $0.id == selectedNoteID
+                                        }) {
                                             store.togglePin(for: store.notes[idx])
                                         }
                                     }
                                 }) {
                                     Image(systemName: note.pinned ? "pin.fill" : "pin")
                                         .font(.system(size: 13))
-                                        .foregroundColor(note.pinned ? Theme.pinGold : Theme.textMuted)
+                                        .foregroundColor(
+                                            note.pinned ? Theme.pinGold : Theme.textMuted
+                                        )
                                         .frame(width: 24, height: 24)
                                 }
                                 .buttonStyle(.plain)
@@ -280,7 +298,10 @@ struct MainPanel: View {
                                     .padding(.vertical, 6)
                                     .frame(width: 260)
                                     .background(Theme.sidebarBg)
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8).stroke(
+                                            Theme.border, lineWidth: 1)
+                                    )
                                     .cornerRadius(8)
                                 }
                             }
@@ -290,15 +311,18 @@ struct MainPanel: View {
                         .padding(.trailing, 22)
                         .padding(.top, 20)
                         .padding(.bottom, 12)
-                        
-                        RichTextEditorWrapper(note: note, store: store, editorState: $editorState, isFocused: _focus)
-                            .padding(.leading, sidebarCollapsed ? 40 : 18)
-                            .padding(.trailing, 18)
-                            .padding(.bottom, 14)
-                            .zIndex(0)
+
+                        RichTextEditorWrapper(
+                            note: note, store: store, editorState: $editorState, isFocused: _focus
+                        )
+                        .padding(.leading, sidebarCollapsed ? 40 : 18)
+                        .padding(.trailing, 18)
+                        .padding(.bottom, 14)
+                        .zIndex(0)
                     } else {
                         VStack(spacing: 16) {
-                            Image(systemName: "doc.text").font(.system(size: 40)).foregroundColor(Theme.border)
+                            Image(systemName: "doc.text").font(.system(size: 40)).foregroundColor(
+                                Theme.border)
                             Text("No note selected").foregroundColor(Theme.textMuted)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -308,7 +332,9 @@ struct MainPanel: View {
                 .background(Theme.bg)
                 .overlay(alignment: .topLeading) {
                     if sidebarCollapsed {
-                        Button(action: { withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false } }) {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
+                        }) {
                             Image(systemName: "sidebar.right")
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundColor(Theme.textMuted)
@@ -322,28 +348,40 @@ struct MainPanel: View {
                 .overlay(alignment: .bottomTrailing) {
                     if let notionMessage = store.notionSyncStatusMessage {
                         HStack(spacing: 8) {
-                            Image(systemName: store.notionSyncInFlight ? "arrow.triangle.2.circlepath" : (store.notionSyncStatusIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"))
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(store.notionSyncStatusIsError ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
+                            Image(
+                                systemName: store.notionSyncInFlight
+                                    ? "arrow.triangle.2.circlepath"
+                                    : (store.notionSyncStatusIsError
+                                        ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            )
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(
+                                store.notionSyncStatusIsError
+                                    ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
                             Text(notionMessage)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .font(.system(size: 11))
-                                .foregroundColor(store.notionSyncStatusIsError ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
+                                .foregroundColor(
+                                    store.notionSyncStatusIsError
+                                        ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
                         .background(Theme.sidebarBg.opacity(0.78))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.border.opacity(0.7), lineWidth: 0.6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6).stroke(
+                                Theme.border.opacity(0.7), lineWidth: 0.6)
+                        )
                         .cornerRadius(6)
                         .padding(.trailing, 12)
                         .padding(.bottom, 10)
                     }
                 }
             }
-            
+
             Divider().background(Theme.border)
-            
+
             // BOTTOM BAR
             HStack {
                 HStack(spacing: 6) {
@@ -359,14 +397,16 @@ struct MainPanel: View {
                 .foregroundColor(Theme.textMuted)
                 .font(.system(size: 12, weight: .medium))
                 .padding(.leading, 8)
-                
+
                 Button(action: {
                     withAnimation {
                         let toDelete = store.notes.filter { !$0.pinned }
                         for note in toDelete {
                             store.delete(note)
                         }
-                        if let selected = selectedNoteID, !store.notes.contains(where: { $0.id == selected }) {
+                        if let selected = selectedNoteID,
+                            !store.notes.contains(where: { $0.id == selected })
+                        {
                             selectedNoteID = mostRecentlyModifiedNoteID
                         }
                     }
@@ -384,7 +424,7 @@ struct MainPanel: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, 8)
-                
+
                 Spacer()
 
                 Text("\(filteredNotes.count) results found")
@@ -392,14 +432,17 @@ struct MainPanel: View {
                     .foregroundColor(Theme.textMuted)
 
                 if let selectedNoteID,
-                   let note = store.notes.first(where: { $0.id == selectedNoteID }) {
+                    let note = store.notes.first(where: { $0.id == selectedNoteID })
+                {
                     Divider()
                         .frame(height: 12)
                         .background(Theme.border)
                         .padding(.horizontal, 10)
-                    Text("Created \(metaTimeString(from: note.createdAt)) • \(note.plainTextCache.split(separator: " ").count) words")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Theme.textMuted)
+                    Text(
+                        "Created \(metaTimeString(from: note.createdAt)) • \(note.plainTextCache.split(separator: " ").count) words"
+                    )
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(Theme.textMuted)
                 }
             }
             .padding(.horizontal, 16)
@@ -471,7 +514,10 @@ struct MainPanel: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
                             .background(Theme.bg)
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10).stroke(
+                                    Theme.border, lineWidth: 1)
+                            )
                             .cornerRadius(10)
 
                         Text("Link")
@@ -484,7 +530,10 @@ struct MainPanel: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
                             .background(Theme.bg)
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10).stroke(
+                                    Theme.border, lineWidth: 1)
+                            )
                             .cornerRadius(10)
 
                         HStack {
@@ -496,7 +545,10 @@ struct MainPanel: View {
                             .padding(.horizontal, 18)
                             .padding(.vertical, 8)
                             .background(Theme.elementBg)
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10).stroke(
+                                    Theme.border, lineWidth: 1)
+                            )
                             .cornerRadius(10)
                             .foregroundColor(Theme.textMuted)
 
@@ -531,7 +583,8 @@ struct MainPanel: View {
             linkEditorURL = (notification.userInfo?["url"] as? String) ?? ""
             showLinkEditor = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpened"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NotsyOpened"))) {
+            _ in
             store.sortNotes()
             queryBuffer = ""
             refreshSidebarPreviewCache()
@@ -598,12 +651,13 @@ struct MainPanel: View {
         if showLinkEditor { return event }
 
         // Up/Down in global search should navigate matched notes.
-        if (focus == .search || focus == .list),
-           !filteredNotes.isEmpty,
-           !event.modifierFlags.contains(.command),
-           !event.modifierFlags.contains(.option),
-           !event.modifierFlags.contains(.control),
-           (event.keyCode == 125 || event.keyCode == 126) {
+        if focus == .search || focus == .list,
+            !filteredNotes.isEmpty,
+            !event.modifierFlags.contains(.command),
+            !event.modifierFlags.contains(.option),
+            !event.modifierFlags.contains(.control),
+            event.keyCode == 125 || event.keyCode == 126
+        {
             moveSearchSelection(delta: event.keyCode == 125 ? 1 : -1)
             return nil
         }
@@ -625,15 +679,18 @@ struct MainPanel: View {
         }
         // Cmd + / -> toggle sidebar
         if event.modifierFlags.contains(.command),
-           !event.modifierFlags.contains(.shift),
-           !event.modifierFlags.contains(.option),
-           !event.modifierFlags.contains(.control),
-           event.charactersIgnoringModifiers == "/" {
+            !event.modifierFlags.contains(.shift),
+            !event.modifierFlags.contains(.option),
+            !event.modifierFlags.contains(.control),
+            event.charactersIgnoringModifiers == "/"
+        {
             withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed.toggle() }
             return nil
         }
         // Cmd + F -> Find inside editor
-        if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) && event.keyCode == 3 {
+        if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift)
+            && event.keyCode == 3
+        {
             showEditorFind = true
             DispatchQueue.main.async {
                 focus = .find
@@ -643,7 +700,8 @@ struct MainPanel: View {
         }
         // Cmd + , (Preferences)
         if event.modifierFlags.contains(.command) && event.keyCode == 43 {
-            NotificationCenter.default.post(name: NSNotification.Name("NotsyShowPreferences"), object: nil)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotsyShowPreferences"), object: nil)
             return nil
         }
         if event.modifierFlags.contains(.command) && event.keyCode == 45 {
@@ -655,9 +713,17 @@ struct MainPanel: View {
             return nil
         }
         if event.keyCode == 53 {
-            if focus == .editor || focus == .title { focus = .search; return nil }
-            else if !queryBuffer.isEmpty { queryBuffer = ""; focus = .search; return nil }
-            else { onClose(); return nil }
+            if focus == .editor || focus == .title {
+                focus = .search
+                return nil
+            } else if !queryBuffer.isEmpty {
+                queryBuffer = ""
+                focus = .search
+                return nil
+            } else {
+                onClose()
+                return nil
+            }
         }
         if event.keyCode == 36 {
             if focus == .search || focus == .list {
@@ -684,7 +750,8 @@ struct MainPanel: View {
         guard !navigableNotes.isEmpty else { return }
 
         if let selectedNoteID,
-           let currentIndex = navigableNotes.firstIndex(where: { $0.id == selectedNoteID }) {
+            let currentIndex = navigableNotes.firstIndex(where: { $0.id == selectedNoteID })
+        {
             let nextIndex = max(0, min(navigableNotes.count - 1, currentIndex + delta))
             self.selectedNoteID = navigableNotes[nextIndex].id
             return
@@ -694,7 +761,9 @@ struct MainPanel: View {
     }
 
     private func handleSearchSubmit() {
-        if filteredNotes.isEmpty { createNewNote(fromQuery: true) } else {
+        if filteredNotes.isEmpty {
+            createNewNote(fromQuery: true)
+        } else {
             if let first = filteredNotes.first { selectedNoteID = first.id }
             focus = .editor
         }
@@ -703,9 +772,15 @@ struct MainPanel: View {
     private func createNewNote(fromQuery: Bool) {
         let hasQuery = fromQuery && !queryBuffer.isEmpty
         let initialTitle = hasQuery ? capitalizeFirstCharacter(queryBuffer) : ""
-        let newNote = Note(title: initialTitle, plainTextCache: "", createdAt: Date(), updatedAt: Date())
+        let newNote = Note(
+            title: initialTitle, plainTextCache: "", createdAt: Date(), updatedAt: Date())
 
-        let attrStr = NSAttributedString(string: "", attributes: [.font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular), .foregroundColor: Theme.editorTextNSColor])
+        let attrStr = NSAttributedString(
+            string: "",
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular),
+                .foregroundColor: Theme.editorTextNSColor,
+            ])
         newNote.update(with: attrStr)
         store.insert(newNote)
         queryBuffer = ""
@@ -728,6 +803,14 @@ struct MainPanel: View {
     }
 
     private func postColorAction(_ action: String) {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("NotsyToolbarAction"),
+            object: nil,
+            userInfo: ["action": action]
+        )
+    }
+
+    private func postToolbarAction(_ action: String) {
         NotificationCenter.default.post(
             name: NSNotification.Name("NotsyToolbarAction"),
             object: nil,
@@ -782,84 +865,177 @@ struct MainPanel: View {
 
     @ViewBuilder
     private func formattingToolbar() -> some View {
-        HStack(spacing: 4) {
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-sans"]) }) {
-                Text("Aa").font(.system(size: 10, weight: .semibold)).frame(width: 24, height: 20).background(Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-serif"]) }) {
-                Text("Ag").font(.system(size: 10, weight: .semibold, design: .serif)).frame(width: 24, height: 20).background(Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-mono"]) }) {
-                Text("M").font(.system(size: 10, weight: .semibold, design: .monospaced)).frame(width: 20, height: 20).background(Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-size-down"]) }) {
-                Text("A-").font(.system(size: 10, weight: .semibold)).frame(width: 22, height: 20).background(Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-size-default"]) }) {
-                Text("A").font(.system(size: 10, weight: .semibold)).frame(width: 16, height: 20).background(Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "font-size-up"]) }) {
-                Text("A+").font(.system(size: 10, weight: .semibold)).frame(width: 22, height: 20).background(Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "bold"]) }) {
-                Text("B").font(.system(size: 12, weight: .bold)).frame(width: 20, height: 20).background(editorState.isBold ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "italic"]) }) {
-                Text("I").font(.system(size: 12, weight: .semibold).italic()).frame(width: 20, height: 20).background(editorState.isItalic ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "underline"]) }) {
-                Text("U").font(.system(size: 12, weight: .semibold)).underline().frame(width: 20, height: 20).background(editorState.isUnderline ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "strikethrough"]) }) {
-                Text("S").font(.system(size: 12, weight: .semibold)).strikethrough().frame(width: 20, height: 20).background(editorState.isStrikethrough ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "link"]) }) {
-                Image(systemName: "link")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 20, height: 20)
-                    .background(Color.clear)
-                    .cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "list"]) }) {
-                Image(systemName: "list.bullet").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isBullet ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NotsyToolbarAction"), object: nil, userInfo: ["action": "checkbox"]) }) {
-                Image(systemName: "checkmark.square").font(.system(size: 10)).frame(width: 20, height: 20).background(editorState.isCheckbox ? Theme.selection.opacity(0.3) : Color.clear).cornerRadius(4)
-            }.buttonStyle(PointerPlainButtonStyle())
-
-            Divider().frame(height: 12).background(Theme.border).padding(.horizontal, 4)
-
-            ColorDot(color: activeEditorColor) { postCustomColor(activeEditorColor) }
-            Button(action: { showColorPalette.toggle() }) {
-                Image(systemName: "eyedropper.halffull")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(PointerPlainButtonStyle())
-            .popover(isPresented: $showColorPalette, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
-                ColorPalettePopover { color in
-                    postCustomColor(color)
-                    showColorPalette = false
+        HStack(spacing: 8) {
+            Menu {
+                Button("Sans") { postToolbarAction("font-sans") }
+                Button("Serif") { postToolbarAction("font-serif") }
+                Button("Mono") { postToolbarAction("font-mono") }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 4, weight: .semibold))
+                    Text("Font")
+                        .font(.system(size: 11, weight: .medium))
                 }
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(Theme.bg.opacity(0.35))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6).stroke(
+                        Theme.border.opacity(0.9), lineWidth: 0.8)
+                )
+                .cornerRadius(6)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .buttonStyle(PointerPlainButtonStyle())
+            .fixedSize(horizontal: true, vertical: false)
+            .help("Choose font style")
+
+            HStack(spacing: 2) {
+                Button(action: { postToolbarAction("font-size-down") }) {
+                    Image(systemName: "minus")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Decrease font size")
+
+                Button(action: { postToolbarAction("font-size-default") }) {
+                    Text("A")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 20, height: 22)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Reset font size")
+
+                Button(action: { postToolbarAction("font-size-up") }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Increase font size")
+            }
+
+            Divider().frame(height: 14).background(Theme.border)
+
+            if editorState.hasSelection {
+                HStack(spacing: 2) {
+                    Button(action: { postToolbarAction("bold") }) {
+                        Text("B")
+                            .font(.system(size: 12, weight: .bold))
+                            .frame(width: 22, height: 22)
+                            .background(
+                                editorState.isBold ? Theme.selection.opacity(0.32) : Color.clear
+                            )
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PointerPlainButtonStyle())
+                    .help("Bold (Command-B)")
+
+                    Button(action: { postToolbarAction("italic") }) {
+                        Text("I")
+                            .font(.system(size: 12, weight: .semibold).italic())
+                            .frame(width: 22, height: 22)
+                            .background(
+                                editorState.isItalic ? Theme.selection.opacity(0.32) : Color.clear
+                            )
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PointerPlainButtonStyle())
+                    .help("Italic (Command-I)")
+
+                    Button(action: { postToolbarAction("underline") }) {
+                        Text("U")
+                            .font(.system(size: 12, weight: .semibold))
+                            .underline()
+                            .frame(width: 22, height: 22)
+                            .background(
+                                editorState.isUnderline
+                                    ? Theme.selection.opacity(0.32) : Color.clear
+                            )
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PointerPlainButtonStyle())
+                    .help("Underline (Command-U)")
+
+                    Button(action: { postToolbarAction("strikethrough") }) {
+                        Text("S")
+                            .font(.system(size: 12, weight: .semibold))
+                            .strikethrough()
+                            .frame(width: 22, height: 22)
+                            .background(
+                                editorState.isStrikethrough
+                                    ? Theme.selection.opacity(0.32) : Color.clear
+                            )
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PointerPlainButtonStyle())
+                    .help("Strikethrough")
+                }
+            } else {
+                Text("Select text to format")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textMuted.opacity(0.8))
+                    .padding(.horizontal, 2)
+            }
+
+            Divider().frame(height: 14).background(Theme.border)
+
+            HStack(spacing: 2) {
+                Button(action: { postToolbarAction("list") }) {
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                        .background(
+                            editorState.isBullet ? Theme.selection.opacity(0.32) : Color.clear
+                        )
+                        .cornerRadius(4)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Bullet list")
+
+                Button(action: { postToolbarAction("checkbox") }) {
+                    Image(systemName: "checkmark.square")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                        .background(
+                            editorState.isCheckbox ? Theme.selection.opacity(0.32) : Color.clear
+                        )
+                        .cornerRadius(4)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Checklist")
+            }
+
+            Divider().frame(height: 14).background(Theme.border)
+
+            HStack(spacing: 4) {
+                ColorDot(color: activeEditorColor) { showColorPalette.toggle() }
+                    .help("Text color")
+                    .popover(
+                        isPresented: $showColorPalette, attachmentAnchor: .rect(.bounds),
+                        arrowEdge: .top
+                    ) {
+                        ColorPalettePopover { color in
+                            postCustomColor(color)
+                            showColorPalette = false
+                        }
+                    }
+
+                Button(action: { postToolbarAction("link") }) {
+                    Image(systemName: "link")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Insert or edit link")
             }
         }
         .foregroundColor(Theme.textMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeInOut(duration: 0.12), value: editorState.hasSelection)
     }
 
     @ViewBuilder
@@ -870,19 +1046,24 @@ struct MainPanel: View {
                     .font(.system(size: 24))
                     .foregroundColor(Theme.pinGold)
             }
-            TextField("Untitled", text: Binding(
-                get: {
-                    if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
-                        return store.notes[idx].title
+            TextField(
+                "Untitled",
+                text: Binding(
+                    get: {
+                        if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
+                            return store.notes[idx].title
+                        }
+                        return note.title
+                    },
+                    set: { newValue in
+                        let previousTitle =
+                            store.notes.first(where: { $0.id == selectedNoteID })?.title ?? ""
+                        let nextTitle =
+                            previousTitle.isEmpty ? capitalizeFirstCharacter(newValue) : newValue
+                        store.updateTitle(noteID: selectedNoteID, title: nextTitle)
                     }
-                    return note.title
-                },
-                set: { newValue in
-                    let previousTitle = store.notes.first(where: { $0.id == selectedNoteID })?.title ?? ""
-                    let nextTitle = previousTitle.isEmpty ? capitalizeFirstCharacter(newValue) : newValue
-                    store.updateTitle(noteID: selectedNoteID, title: nextTitle)
-                }
-            ))
+                )
+            )
             .font(.system(size: 30, weight: .bold))
             .lineLimit(1)
         }
@@ -911,7 +1092,8 @@ struct SidebarView: View {
     var body: some View {
         let pinned = filteredNotes.filter { $0.pinned }
         let recent = filteredNotes.filter { !$0.pinned }
-        let topHitID = (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
+        let topHitID =
+            (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
         let displayPinned = pinned.filter { $0.id != topHitID }
         let displayRecent = recent.filter { $0.id != topHitID }
 
@@ -940,11 +1122,14 @@ struct SidebarView: View {
                     Button(action: createNewNote) {
                         HStack(spacing: 10) {
                             ZRectangleIcon(icon: "plus", isSelected: false)
-                            Text(queryBuffer.isEmpty ? "Create New Note" : "Create \"\(queryBuffer)\"")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(Theme.text)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
+                            Text(
+                                queryBuffer.isEmpty
+                                    ? "Create New Note" : "Create \"\(queryBuffer)\""
+                            )
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(Theme.text)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                             Spacer()
                             Text("Cmd+N")
                                 .font(.system(size: 8))
@@ -1016,7 +1201,8 @@ struct SidebarView: View {
         .background(dragOverPinnedSection ? Theme.selection.opacity(0.16) : Color.clear)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(dragOverPinnedSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
+                .stroke(
+                    dragOverPinnedSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
         )
         .cornerRadius(8)
         .animation(.easeInOut(duration: 0.12), value: dragOverPinnedSection)
@@ -1053,7 +1239,8 @@ struct SidebarView: View {
         .background(dragOverRecentSection ? Theme.selection.opacity(0.16) : Color.clear)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(dragOverRecentSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
+                .stroke(
+                    dragOverRecentSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
         )
         .cornerRadius(8)
         .animation(.easeInOut(duration: 0.12), value: dragOverRecentSection)
@@ -1080,7 +1267,8 @@ struct SidebarView: View {
                 .opacity(dropTargetNoteID == note.id ? 1 : 0)
                 .padding(.horizontal, 8)
         }
-        .onDrop(of: [dragTypeIdentifier], isTargeted: dropTargetBinding(for: note.id)) { providers in
+        .onDrop(of: [dragTypeIdentifier], isTargeted: dropTargetBinding(for: note.id)) {
+            providers in
             handleDrop(providers: providers, toPinned: destinationPinned, before: note.id)
         }
         .onHover { isHovering in
@@ -1109,9 +1297,15 @@ struct SidebarView: View {
             Button(action: {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(note.plainTextCache, forType: .string)
-            }) { Text("Copy Content"); Image(systemName: "doc.on.doc") }
+            }) {
+                Text("Copy Content")
+                Image(systemName: "doc.on.doc")
+            }
             Divider()
-            Button(role: .destructive, action: { withAnimation { store.delete(note) } }) { Text("Delete"); Image(systemName: "trash") }
+            Button(role: .destructive, action: { withAnimation { store.delete(note) } }) {
+                Text("Delete")
+                Image(systemName: "trash")
+            }
         }
     }
 
@@ -1122,7 +1316,9 @@ struct SidebarView: View {
         return NSItemProvider(object: note.id.uuidString as NSString)
     }
 
-    private func handleDrop(providers: [NSItemProvider], toPinned: Bool, before beforeNoteID: UUID? = nil) -> Bool {
+    private func handleDrop(
+        providers: [NSItemProvider], toPinned: Bool, before beforeNoteID: UUID? = nil
+    ) -> Bool {
         guard queryBuffer.isEmpty else { return false }
 
         if let draggedID = draggedNoteID {
@@ -1130,7 +1326,11 @@ struct SidebarView: View {
             return true
         }
 
-        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(dragTypeIdentifier) }) else {
+        guard
+            let provider = providers.first(where: {
+                $0.hasItemConformingToTypeIdentifier(dragTypeIdentifier)
+            })
+        else {
             return false
         }
 
@@ -1147,7 +1347,9 @@ struct SidebarView: View {
             }
 
             guard let rawValue,
-                  let draggedID = UUID(uuidString: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                let draggedID = UUID(
+                    uuidString: rawValue.trimmingCharacters(in: .whitespacesAndNewlines))
+            else {
                 return
             }
 
@@ -1200,7 +1402,8 @@ struct RichTextEditorWrapper: View {
     let store: NoteStore
     @Binding var editorState: EditorState
     @FocusState var isFocused: MainPanel.FocusField?
-    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
+    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant
+        .bluish.rawValue
 
     var body: some View {
         RichTextEditorView(
@@ -1216,7 +1419,7 @@ struct RichTextEditorWrapper: View {
 struct ShortcutBadge: View {
     let key: String
     let label: String
-    
+
     var body: some View {
         HStack(spacing: 6) {
             Text(key)
@@ -1267,9 +1470,16 @@ struct ColorPalettePopover: View {
     let onSelect: (NSColor) -> Void
 
     private let palette: [NSColor] = [
-        .white, .systemGray, .systemRed, .systemOrange, .systemYellow, .systemGreen, .systemMint, .systemTeal, .systemBlue, .systemIndigo, .systemPurple, .systemPink,
-        NSColor(red: 0.92, green: 0.58, blue: 0.58, alpha: 1), NSColor(red: 0.86, green: 0.72, blue: 0.52, alpha: 1), NSColor(red: 0.61, green: 0.80, blue: 0.45, alpha: 1), NSColor(red: 0.45, green: 0.77, blue: 0.73, alpha: 1),
-        NSColor(red: 0.45, green: 0.62, blue: 0.95, alpha: 1), NSColor(red: 0.65, green: 0.52, blue: 0.95, alpha: 1), NSColor(red: 0.88, green: 0.50, blue: 0.83, alpha: 1), NSColor(red: 0.74, green: 0.74, blue: 0.74, alpha: 1)
+        .white, .systemGray, .systemRed, .systemOrange, .systemYellow, .systemGreen, .systemMint,
+        .systemTeal, .systemBlue, .systemIndigo, .systemPurple, .systemPink,
+        NSColor(red: 0.92, green: 0.58, blue: 0.58, alpha: 1),
+        NSColor(red: 0.86, green: 0.72, blue: 0.52, alpha: 1),
+        NSColor(red: 0.61, green: 0.80, blue: 0.45, alpha: 1),
+        NSColor(red: 0.45, green: 0.77, blue: 0.73, alpha: 1),
+        NSColor(red: 0.45, green: 0.62, blue: 0.95, alpha: 1),
+        NSColor(red: 0.65, green: 0.52, blue: 0.95, alpha: 1),
+        NSColor(red: 0.88, green: 0.50, blue: 0.83, alpha: 1),
+        NSColor(red: 0.74, green: 0.74, blue: 0.74, alpha: 1),
     ]
 
     var body: some View {
@@ -1278,7 +1488,9 @@ struct ColorPalettePopover: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(Theme.textMuted)
 
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(20), spacing: 8), count: 6), spacing: 8) {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(20), spacing: 8), count: 6), spacing: 8
+            ) {
                 ForEach(Array(palette.enumerated()), id: \.offset) { _, color in
                     Button(action: { onSelect(color) }) {
                         Circle()
@@ -1322,14 +1534,14 @@ struct NoteRowView: View {
     var body: some View {
         HStack(spacing: 12) {
             ZRectangleIcon(icon: "doc.text.fill", isSelected: isSelected)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(note.title.isEmpty ? "Untitled" : note.title)
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(isSelected ? .white : Theme.text)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                
+
                 HStack(spacing: 4) {
                     Text(timeString(from: note.updatedAt))
                         .lineLimit(1)
@@ -1352,9 +1564,9 @@ struct NoteRowView: View {
                 .truncationMode(.tail)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            
+
             Spacer()
-            
+
             if isSelected {
                 Image(systemName: "arrow.turn.down.left")
                     .font(.system(size: 12))
@@ -1374,7 +1586,7 @@ struct NoteRowView: View {
             ? Color(red: 0.38, green: 0.40, blue: 0.45)
             : Theme.selection
     }
-    
+
     private func preview(for text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "No additional text" }
