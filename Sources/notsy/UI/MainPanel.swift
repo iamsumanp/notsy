@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum EditorFontStyle: Equatable {
-    case sans
+    case system
     case serif
     case mono
 }
@@ -15,7 +15,7 @@ struct EditorState: Equatable {
     var isStrikethrough: Bool = false
     var isBullet: Bool = false
     var isCheckbox: Bool = false
-    var fontStyle: EditorFontStyle = .mono
+    var fontStyle: EditorFontStyle = .system
     var hasSelection: Bool = false
 }
 
@@ -43,6 +43,8 @@ struct MainPanel: View {
     @State private var sidebarContentPreviewCache: [UUID: String] = [:]
     @State private var autoExpandedSidebarForSearch = false
     @State private var keyDownMonitor: Any?
+    @State private var zenModeEnabled = false
+    @State private var showClearUnpinnedConfirmation = false
 
     enum FocusField: Hashable {
         case search
@@ -88,6 +90,14 @@ struct MainPanel: View {
         focus == .editor || focus == .title || focus == .find
     }
 
+    private var sidebarIsVisible: Bool {
+        !zenModeEnabled && !sidebarCollapsed
+    }
+
+    private var editorUsesCompactSidebarSpacing: Bool {
+        sidebarCollapsed && !zenModeEnabled
+    }
+
     private var selectedThemeVariant: NotsyThemeVariant {
         NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish
     }
@@ -99,65 +109,67 @@ struct MainPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             // TOP BIG SEARCH BAR
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: isSearchCompact ? 14 : 18))
-                    .foregroundColor(Theme.textMuted)
+            if !zenModeEnabled {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: isSearchCompact ? 14 : 18))
+                        .foregroundColor(Theme.textMuted)
 
-                TextField("Search or command...", text: $queryBuffer)
-                    .font(.system(size: isSearchCompact ? 14 : 18))
-                    .textFieldStyle(.plain)
-                    .foregroundColor(Theme.text)
-                    .focused($focus, equals: .search)
-                    .onChange(of: queryBuffer) { oldVal, newVal in
-                        if focus == .search {
-                            if !newVal.isEmpty && sidebarCollapsed {
-                                autoExpandedSidebarForSearch = true
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    sidebarCollapsed = false
+                    TextField("Search or command...", text: $queryBuffer)
+                        .font(.system(size: isSearchCompact ? 14 : 18))
+                        .textFieldStyle(.plain)
+                        .foregroundColor(Theme.text)
+                        .focused($focus, equals: .search)
+                        .onChange(of: queryBuffer) { oldVal, newVal in
+                            if !zenModeEnabled, focus == .search {
+                                if !newVal.isEmpty && sidebarCollapsed {
+                                    autoExpandedSidebarForSearch = true
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        sidebarCollapsed = false
+                                    }
+                                } else if newVal.isEmpty && autoExpandedSidebarForSearch {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        sidebarCollapsed = true
+                                    }
+                                    autoExpandedSidebarForSearch = false
                                 }
-                            } else if newVal.isEmpty && autoExpandedSidebarForSearch {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    sidebarCollapsed = true
+                            }
+                            if !newVal.isEmpty, let first = navigableNotes.first {
+                                if selectedNoteID != first.id {
+                                    selectedNoteID = first.id
                                 }
-                                autoExpandedSidebarForSearch = false
                             }
                         }
-                        if !newVal.isEmpty, let first = navigableNotes.first {
-                            if selectedNoteID != first.id {
-                                selectedNoteID = first.id
-                            }
-                        }
-                    }
-                    .onSubmit { handleSearchSubmit() }
+                        .onSubmit { handleSearchSubmit() }
 
-                Spacer()
+                    Spacer()
 
-                Text("ESC")
-                    .font(.system(size: 10, weight: .bold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Theme.elementBg)
-                    .foregroundColor(Theme.textMuted)
-                    .cornerRadius(4)
+                    Text("ESC")
+                        .font(.system(size: 10, weight: .bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Theme.elementBg)
+                        .foregroundColor(Theme.textMuted)
+                        .cornerRadius(4)
+                }
+                .padding(.horizontal, isSearchCompact ? 10 : 12)
+                .padding(.vertical, isSearchCompact ? 8 : 12)
+                .background(Theme.sidebarBg)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(focus == .search ? Theme.selection : Theme.border, lineWidth: 1)
+                )
+                .padding(12)
+                .background(Theme.sidebarBg)
+                .animation(.easeInOut(duration: 0.15), value: isSearchCompact)
+
+                Divider().background(Theme.border)
             }
-            .padding(.horizontal, isSearchCompact ? 12 : 16)
-            .padding(.vertical, isSearchCompact ? 10 : 16)
-            .background(Theme.sidebarBg)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(focus == .search ? Theme.selection : Theme.border, lineWidth: 1)
-            )
-            .padding(16)
-            .background(Theme.sidebarBg)
-            .animation(.easeInOut(duration: 0.15), value: isSearchCompact)
-
-            Divider().background(Theme.border)
 
             // MAIN CONTENT
             HStack(spacing: 0) {
                 // LEFT PANEL (SIDEBAR)
-                if !sidebarCollapsed {
+                if sidebarIsVisible {
                     ZStack(alignment: .topTrailing) {
                         SidebarView(
                             queryBuffer: $queryBuffer,
@@ -242,24 +254,6 @@ struct MainPanel: View {
                         .zIndex(showColorPalette ? 50 : 1)
                         .overlay(alignment: .topTrailing) {
                             VStack(alignment: .trailing, spacing: 8) {
-                                Button(action: {
-                                    withAnimation(.spring()) {
-                                        if let idx = store.notes.firstIndex(where: {
-                                            $0.id == selectedNoteID
-                                        }) {
-                                            store.togglePin(for: store.notes[idx])
-                                        }
-                                    }
-                                }) {
-                                    Image(systemName: note.pinned ? "pin.fill" : "pin")
-                                        .font(.system(size: 13))
-                                        .foregroundColor(
-                                            note.pinned ? Theme.pinGold : Theme.textMuted
-                                        )
-                                        .frame(width: 24, height: 24)
-                                }
-                                .buttonStyle(.plain)
-
                                 if showEditorFind {
                                     HStack(spacing: 6) {
                                         Image(systemName: "magnifyingglass")
@@ -305,9 +299,10 @@ struct MainPanel: View {
                                     .cornerRadius(8)
                                 }
                             }
-                            .offset(x: 18, y: 0)
+                            // Keep actions aligned to the editor surface right edge.
+                            .offset(x: 4, y: 0)
                         }
-                        .padding(.leading, sidebarCollapsed ? 48 : 22)
+                        .padding(.leading, editorUsesCompactSidebarSpacing ? 48 : 22)
                         .padding(.trailing, 22)
                         .padding(.top, 20)
                         .padding(.bottom, 12)
@@ -315,7 +310,7 @@ struct MainPanel: View {
                         RichTextEditorWrapper(
                             note: note, store: store, editorState: $editorState, isFocused: _focus
                         )
-                        .padding(.leading, sidebarCollapsed ? 40 : 18)
+                        .padding(.leading, editorUsesCompactSidebarSpacing ? 40 : 18)
                         .padding(.trailing, 18)
                         .padding(.bottom, 14)
                         .zIndex(0)
@@ -331,7 +326,7 @@ struct MainPanel: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.bg)
                 .overlay(alignment: .topLeading) {
-                    if sidebarCollapsed {
+                    if sidebarCollapsed && !zenModeEnabled {
                         Button(action: {
                             withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed = false }
                         }) {
@@ -380,74 +375,66 @@ struct MainPanel: View {
                 }
             }
 
-            Divider().background(Theme.border)
+            if !zenModeEnabled {
+                Divider().background(Theme.border)
 
-            // BOTTOM BAR
-            HStack {
-                HStack(spacing: 6) {
-                    Image(systemName: "folder")
+                // BOTTOM BAR
+                HStack {
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 12))
+                        Text("Notsy")
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10))
+                        Text("Application Support/Notsy")
+                            .truncationMode(.middle)
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(Theme.textMuted)
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.leading, 8)
+
+                    Button(action: {
+                        showClearUnpinnedConfirmation = true
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                            Text("Clear Unpinned")
+                        }
                         .font(.system(size: 12))
-                    Text("Notsy")
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10))
-                    Text("Application Support/Notsy")
-                        .truncationMode(.middle)
-                        .lineLimit(1)
-                }
-                .foregroundColor(Theme.textMuted)
-                .font(.system(size: 12, weight: .medium))
-                .padding(.leading, 8)
-
-                Button(action: {
-                    withAnimation {
-                        let toDelete = store.notes.filter { !$0.pinned }
-                        for note in toDelete {
-                            store.delete(note)
-                        }
-                        if let selected = selectedNoteID,
-                            !store.notes.contains(where: { $0.id == selected })
-                        {
-                            selectedNoteID = mostRecentlyModifiedNoteID
-                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Theme.elementBg)
+                        .foregroundColor(Theme.textMuted)
+                        .cornerRadius(4)
                     }
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "trash")
-                        Text("Clear Unpinned")
+                    .buttonStyle(.plain)
+                    .padding(.leading, 8)
+
+                    Spacer()
+
+                    Text("\(filteredNotes.count) results found")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textMuted)
+
+                    if let selectedNoteID,
+                        let note = store.notes.first(where: { $0.id == selectedNoteID })
+                    {
+                        Divider()
+                            .frame(height: 12)
+                            .background(Theme.border)
+                            .padding(.horizontal, 10)
+                        Text(
+                            "Created \(metaTimeString(from: note.createdAt)) • \(note.plainTextCache.split(separator: " ").count) words"
+                        )
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(Theme.textMuted)
                     }
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Theme.elementBg)
-                    .foregroundColor(Theme.textMuted)
-                    .cornerRadius(4)
                 }
-                .buttonStyle(.plain)
-                .padding(.leading, 8)
-
-                Spacer()
-
-                Text("\(filteredNotes.count) results found")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textMuted)
-
-                if let selectedNoteID,
-                    let note = store.notes.first(where: { $0.id == selectedNoteID })
-                {
-                    Divider()
-                        .frame(height: 12)
-                        .background(Theme.border)
-                        .padding(.horizontal, 10)
-                    Text(
-                        "Created \(metaTimeString(from: note.createdAt)) • \(note.plainTextCache.split(separator: " ").count) words"
-                    )
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(Theme.textMuted)
-                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Theme.sidebarBg)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Theme.sidebarBg)
         }
         .frame(width: 950, height: 650)
         .background(Theme.sidebarBg)
@@ -598,7 +585,10 @@ struct MainPanel: View {
                 focus = .search
             }
         }
-        .onReceive(focusSearchPub) { _ in focus = .search }
+        .onReceive(focusSearchPub) { _ in
+            exitZenMode()
+            focus = .search
+        }
         .onChange(of: themeVariantRaw) { _, _ in
             activeEditorColor = Theme.editorTextNSColor
         }
@@ -642,6 +632,26 @@ struct MainPanel: View {
                 self.keyDownMonitor = nil
             }
         }
+        .alert("Delete all unpinned notes?", isPresented: $showClearUnpinnedConfirmation) {
+            Button("Delete", role: .destructive) {
+                withAnimation {
+                    let selectedWasUnpinned = selectedNoteID.flatMap { id in
+                        store.notes.first(where: { $0.id == id })
+                    }?.pinned == false
+                    let toDelete = store.notes.filter { !$0.pinned }
+                    for note in toDelete {
+                        store.delete(note)
+                    }
+                    if selectedWasUnpinned {
+                        selectedNoteID = nil
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let count = store.notes.filter { !$0.pinned }.count
+            Text("This will permanently delete \(count) unpinned note\(count == 1 ? "" : "s").")
+        }
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
@@ -672,8 +682,18 @@ struct MainPanel: View {
             focus = .editor
             return nil
         }
+        // Cmd + Shift + / -> toggle Zen mode
+        if event.modifierFlags.contains([.command, .shift]),
+            !event.modifierFlags.contains(.option),
+            !event.modifierFlags.contains(.control),
+            event.keyCode == 44
+        {
+            toggleZenMode()
+            return nil
+        }
         // Cmd + Shift + F -> Global search
         if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 3 {
+            exitZenMode()
             focus = .search
             return nil
         }
@@ -682,15 +702,23 @@ struct MainPanel: View {
             !event.modifierFlags.contains(.shift),
             !event.modifierFlags.contains(.option),
             !event.modifierFlags.contains(.control),
-            event.charactersIgnoringModifiers == "/"
+            event.keyCode == 44
         {
-            withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed.toggle() }
+            if zenModeEnabled {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    zenModeEnabled = false
+                    sidebarCollapsed = false
+                }
+            } else {
+                withAnimation(.easeInOut(duration: 0.15)) { sidebarCollapsed.toggle() }
+            }
             return nil
         }
         // Cmd + F -> Find inside editor
         if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift)
             && event.keyCode == 3
         {
+            exitZenMode()
             showEditorFind = true
             DispatchQueue.main.async {
                 focus = .find
@@ -708,15 +736,34 @@ struct MainPanel: View {
             createNewNote(fromQuery: false)
             return nil
         }
+        // Cmd + P -> toggle pin on selected note
+        if event.modifierFlags.contains(.command),
+            !event.modifierFlags.contains(.shift),
+            !event.modifierFlags.contains(.option),
+            !event.modifierFlags.contains(.control),
+            event.keyCode == 35
+        {
+            if let selectedNoteID,
+                let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID })
+            {
+                withAnimation(.spring()) {
+                    store.togglePin(for: store.notes[idx])
+                }
+            }
+            return nil
+        }
         if event.modifierFlags.contains(.command) && event.keyCode == 37 {
+            exitZenMode()
             focus = .search
             return nil
         }
         if event.keyCode == 53 {
             if focus == .editor || focus == .title {
+                exitZenMode()
                 focus = .search
                 return nil
             } else if !queryBuffer.isEmpty {
+                exitZenMode()
                 queryBuffer = ""
                 focus = .search
                 return nil
@@ -739,11 +786,40 @@ struct MainPanel: View {
         if event.keyCode == 51 && focus == .list {
             if let id = selectedNoteID, let note = store.notes.first(where: { $0.id == id }) {
                 store.delete(note)
-                self.selectedNoteID = filteredNotes.first(where: { $0.id != id })?.id
+                if note.pinned {
+                    self.selectedNoteID = filteredNotes.first(where: { $0.id != id })?.id
+                } else {
+                    self.selectedNoteID = filteredNotes.first(where: { $0.id != id && !$0.pinned })?.id
+                }
                 return nil
             }
         }
         return event
+    }
+
+    private func toggleZenMode() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            zenModeEnabled.toggle()
+        }
+        if zenModeEnabled {
+            autoExpandedSidebarForSearch = false
+            if !queryBuffer.isEmpty {
+                queryBuffer = ""
+            }
+            if showEditorFind {
+                showEditorFind = false
+                editorFindQuery = ""
+                postEditorFindAction("close")
+            }
+            focus = .editor
+        }
+    }
+
+    private func exitZenMode() {
+        guard zenModeEnabled else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            zenModeEnabled = false
+        }
     }
 
     private func moveSearchSelection(delta: Int) {
@@ -778,7 +854,7 @@ struct MainPanel: View {
         let attrStr = NSAttributedString(
             string: "",
             attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 15, weight: .regular),
+                .font: NSFont.systemFont(ofSize: 15, weight: .regular),
                 .foregroundColor: Theme.editorTextNSColor,
             ])
         newNote.update(with: attrStr)
@@ -867,7 +943,7 @@ struct MainPanel: View {
     private func formattingToolbar() -> some View {
         HStack(spacing: 8) {
             Menu {
-                Button("Sans") { postToolbarAction("font-sans") }
+                Button("System") { postToolbarAction("font-system") }
                 Button("Serif") { postToolbarAction("font-serif") }
                 Button("Mono") { postToolbarAction("font-mono") }
             } label: {
@@ -920,65 +996,58 @@ struct MainPanel: View {
 
             Divider().frame(height: 14).background(Theme.border)
 
-            if editorState.hasSelection {
-                HStack(spacing: 2) {
-                    Button(action: { postToolbarAction("bold") }) {
-                        Text("B")
-                            .font(.system(size: 12, weight: .bold))
-                            .frame(width: 22, height: 22)
-                            .background(
-                                editorState.isBold ? Theme.selection.opacity(0.32) : Color.clear
-                            )
-                            .cornerRadius(4)
-                    }
-                    .buttonStyle(PointerPlainButtonStyle())
-                    .help("Bold (Command-B)")
-
-                    Button(action: { postToolbarAction("italic") }) {
-                        Text("I")
-                            .font(.system(size: 12, weight: .semibold).italic())
-                            .frame(width: 22, height: 22)
-                            .background(
-                                editorState.isItalic ? Theme.selection.opacity(0.32) : Color.clear
-                            )
-                            .cornerRadius(4)
-                    }
-                    .buttonStyle(PointerPlainButtonStyle())
-                    .help("Italic (Command-I)")
-
-                    Button(action: { postToolbarAction("underline") }) {
-                        Text("U")
-                            .font(.system(size: 12, weight: .semibold))
-                            .underline()
-                            .frame(width: 22, height: 22)
-                            .background(
-                                editorState.isUnderline
-                                    ? Theme.selection.opacity(0.32) : Color.clear
-                            )
-                            .cornerRadius(4)
-                    }
-                    .buttonStyle(PointerPlainButtonStyle())
-                    .help("Underline (Command-U)")
-
-                    Button(action: { postToolbarAction("strikethrough") }) {
-                        Text("S")
-                            .font(.system(size: 12, weight: .semibold))
-                            .strikethrough()
-                            .frame(width: 22, height: 22)
-                            .background(
-                                editorState.isStrikethrough
-                                    ? Theme.selection.opacity(0.32) : Color.clear
-                            )
-                            .cornerRadius(4)
-                    }
-                    .buttonStyle(PointerPlainButtonStyle())
-                    .help("Strikethrough")
+            HStack(spacing: 2) {
+                Button(action: { postToolbarAction("bold") }) {
+                    Text("B")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 22, height: 22)
+                        .background(
+                            editorState.isBold ? Theme.selection.opacity(0.32) : Color.clear
+                        )
+                        .cornerRadius(4)
                 }
-            } else {
-                Text("Select text to format")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textMuted.opacity(0.8))
-                    .padding(.horizontal, 2)
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Bold (Command-B)")
+
+                Button(action: { postToolbarAction("italic") }) {
+                    Text("I")
+                        .font(.system(size: 12, weight: .semibold).italic())
+                        .frame(width: 22, height: 22)
+                        .background(
+                            editorState.isItalic ? Theme.selection.opacity(0.32) : Color.clear
+                        )
+                        .cornerRadius(4)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Italic (Command-I)")
+
+                Button(action: { postToolbarAction("underline") }) {
+                    Text("U")
+                        .font(.system(size: 12, weight: .semibold))
+                        .underline()
+                        .frame(width: 22, height: 22)
+                        .background(
+                            editorState.isUnderline
+                                ? Theme.selection.opacity(0.32) : Color.clear
+                        )
+                        .cornerRadius(4)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Underline (Command-U)")
+
+                Button(action: { postToolbarAction("strikethrough") }) {
+                    Text("S")
+                        .font(.system(size: 12, weight: .semibold))
+                        .strikethrough()
+                        .frame(width: 22, height: 22)
+                        .background(
+                            editorState.isStrikethrough
+                                ? Theme.selection.opacity(0.32) : Color.clear
+                        )
+                        .cornerRadius(4)
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Strikethrough")
             }
 
             Divider().frame(height: 14).background(Theme.border)
@@ -1042,9 +1111,21 @@ struct MainPanel: View {
     private func titleEditor(for note: Note, selectedNoteID: UUID) -> some View {
         HStack {
             if note.pinned {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 24))
-                    .foregroundColor(Theme.pinGold)
+                Button(action: {
+                    withAnimation(.spring()) {
+                        if let idx = store.notes.firstIndex(where: { $0.id == selectedNoteID }) {
+                            store.togglePin(for: store.notes[idx])
+                        }
+                    }
+                }) {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(Theme.pinGold)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help("Unpin note")
             }
             TextField(
                 "Untitled",
@@ -1302,7 +1383,18 @@ struct SidebarView: View {
                 Image(systemName: "doc.on.doc")
             }
             Divider()
-            Button(role: .destructive, action: { withAnimation { store.delete(note) } }) {
+            Button(role: .destructive, action: {
+                withAnimation {
+                    store.delete(note)
+                    if selectedNoteID == note.id {
+                        if note.pinned {
+                            selectedNoteID = filteredNotes.first(where: { $0.id != note.id })?.id
+                        } else {
+                            selectedNoteID = filteredNotes.first(where: { $0.id != note.id && !$0.pinned })?.id
+                        }
+                    }
+                }
+            }) {
                 Text("Delete")
                 Image(systemName: "trash")
             }
@@ -1406,13 +1498,31 @@ struct RichTextEditorWrapper: View {
         .bluish.rawValue
 
     var body: some View {
-        RichTextEditorView(
-            note: note,
-            store: store,
-            editorState: $editorState,
-            themeVariantRaw: themeVariantRaw
+        ZStack(alignment: .topLeading) {
+            RichTextEditorView(
+                note: note,
+                store: store,
+                editorState: $editorState,
+                themeVariantRaw: themeVariantRaw
+            )
+            .focused($isFocused, equals: .editor)
+
+            if note.plainTextCache.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Start writing...")
+                    .font(.system(size: 15, weight: .regular, design: .monospaced))
+                    .foregroundColor(Theme.textMuted.opacity(0.85))
+                    .padding(.leading, CustomTextView.editorTextInset.width + CustomTextView.editorLineFragmentPadding)
+                    .padding(.top, CustomTextView.editorTextInset.height)
+                    .allowsHitTesting(false)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(
+                    Theme.border.opacity(isFocused == .editor ? 0.95 : 0.78),
+                    lineWidth: isFocused == .editor ? 1.6 : 1.2
+                )
         )
-        .focused($isFocused, equals: .editor)
     }
 }
 

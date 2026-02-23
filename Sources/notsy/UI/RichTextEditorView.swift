@@ -11,18 +11,63 @@ class EditorScrollView: NSScrollView {
 
 class CustomTextView: NSTextView {
     static let editorFontSize: CGFloat = 15
+    static let editorTextInset = NSSize(width: 8, height: 16)
+    static let editorLineFragmentPadding: CGFloat = 5
     private static let imageThumbnailWidth: CGFloat = 56
     private static let imageThumbnailMaxHeight: CGFloat = 34
     private static let fallbackTabInterval: CGFloat = 28
     static let bulletMarkers: [String] = ["• ", "◦ ", "∙ "]
+    private static let codeDefaultForegroundColor = NSColor(
+        calibratedRed: 212.0 / 255.0,
+        green: 212.0 / 255.0,
+        blue: 212.0 / 255.0,
+        alpha: 1.0
+    )
+    private static let codeKeywordForegroundColor = NSColor(
+        calibratedRed: 86.0 / 255.0,
+        green: 156.0 / 255.0,
+        blue: 214.0 / 255.0,
+        alpha: 1.0
+    )
+    private static let codeStringForegroundColor = NSColor(
+        calibratedRed: 206.0 / 255.0,
+        green: 145.0 / 255.0,
+        blue: 120.0 / 255.0,
+        alpha: 1.0
+    )
+    private static let codeNumberForegroundColor = NSColor(
+        calibratedRed: 181.0 / 255.0,
+        green: 206.0 / 255.0,
+        blue: 168.0 / 255.0,
+        alpha: 1.0
+    )
+    private static let codeCommentForegroundColor = NSColor(
+        calibratedRed: 106.0 / 255.0,
+        green: 153.0 / 255.0,
+        blue: 85.0 / 255.0,
+        alpha: 1.0
+    )
+    private static let codeLanguageAttribute = NSAttributedString.Key("notsy.code.language")
+    private static let codeTokenAttribute = NSAttributedString.Key("notsy.code.token")
+
     private var isNormalizingAttachments = false
     private var isNormalizingListParagraphStyles = false
+    private var pendingEditedRange: NSRange?
+
+    private enum DetectedCodeLanguage: String {
+        case swift
+        case python
+        case javascript
+        case json
+        case endpoint
+    }
 
     private static func defaultParagraphStyle() -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 4
         return style
     }
+
 
     private func normalizedTypingAttributes(base: [NSAttributedString.Key: Any]? = nil) -> [NSAttributedString.Key: Any] {
         var attrs = base ?? typingAttributes
@@ -41,6 +86,7 @@ class CustomTextView: NSTextView {
         let attrs = normalizedTypingAttributes()
         let insertion = NSAttributedString(string: text, attributes: attrs)
         textStorage?.replaceCharacters(in: selection, with: insertion)
+        applyCodeHighlightingForEditedRange(NSRange(location: selection.location, length: insertion.length), preferredLanguage: detectCodeLanguage(in: text))
         let cursor = selection.location + insertion.length
         setSelectedRange(NSRange(location: cursor, length: 0))
         typingAttributes = attrs
@@ -51,10 +97,22 @@ class CustomTextView: NSTextView {
         let selection = selectedRange()
         let normalized = normalizePastedAttributedText(attributedText)
         textStorage?.replaceCharacters(in: selection, with: normalized)
+        applyCodeHighlightingForEditedRange(
+            NSRange(location: selection.location, length: normalized.length),
+            preferredLanguage: detectCodeLanguage(in: normalized.string)
+        )
         let cursor = selection.location + normalized.length
         setSelectedRange(NSRange(location: cursor, length: 0))
         typingAttributes = normalizedTypingAttributes()
         didChangeText()
+    }
+
+    func registerPendingEdit(affectedRange: NSRange, replacementString: String?) {
+        let replacementLength = replacementString?.utf16.count ?? 0
+        pendingEditedRange = NSRange(
+            location: affectedRange.location,
+            length: max(affectedRange.length, replacementLength, 1)
+        )
     }
 
     private func normalizePastedAttributedText(_ value: NSAttributedString) -> NSAttributedString {
@@ -70,7 +128,7 @@ class CustomTextView: NSTextView {
 
             if attrs[.attachment] == nil {
                 let sourceFont = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: Self.editorFontSize)
-                normalized[.font] = monospacedFontPreservingTraits(from: sourceFont)
+                normalized[.font] = editorDefaultFontPreservingTraits(from: sourceFont)
                 normalized[.foregroundColor] = Theme.editorTextNSColor
             }
 
@@ -85,7 +143,7 @@ class CustomTextView: NSTextView {
         return mutable
     }
 
-    private func monospacedFontPreservingTraits(from font: NSFont) -> NSFont {
+    private func editorDefaultFontPreservingTraits(from font: NSFont) -> NSFont {
         var result = NSFont.monospacedSystemFont(ofSize: max(1, font.pointSize), weight: .regular)
         let traits = font.fontDescriptor.symbolicTraits
 
@@ -276,7 +334,229 @@ class CustomTextView: NSTextView {
         normalizeListParagraphStylesIfNeeded()
         normalizeImageAttachmentsIfNeeded()
         refreshDetectedLinks()
+        if let pendingEditedRange {
+            applyCodeHighlightingForEditedRange(pendingEditedRange, preferredLanguage: nil)
+            self.pendingEditedRange = nil
+        }
         super.didChangeText()
+    }
+
+    private func applyCodeHighlightingForEditedRange(_ editedRange: NSRange, preferredLanguage: DetectedCodeLanguage?) {
+        guard let textStorage else { return }
+        let text = textStorage.string as NSString
+        guard text.length > 0 else { return }
+
+        let clampedLocation = max(0, min(editedRange.location, max(0, text.length - 1)))
+        let clampedLength = max(1, min(editedRange.length, max(1, text.length - clampedLocation)))
+        let paragraphRange = text.paragraphRange(for: NSRange(location: clampedLocation, length: clampedLength))
+
+        var lineLocation = paragraphRange.location
+        while lineLocation < NSMaxRange(paragraphRange) {
+            let lineRange = text.lineRange(for: NSRange(location: lineLocation, length: 0))
+            let contentRange = lineContentRange(from: lineRange, in: text)
+            if contentRange.length == 0 {
+                clearCodeStyling(in: lineRange)
+                lineLocation = NSMaxRange(lineRange)
+                continue
+            }
+
+            let lineText = text.substring(with: contentRange)
+            let detectedLanguage = detectCodeLanguage(in: lineText) ?? preferredLanguage
+            if let language = detectedLanguage {
+                applyCodeStyling(in: contentRange, lineText: lineText, language: language)
+            } else {
+                clearCodeStyling(in: lineRange)
+            }
+
+            lineLocation = NSMaxRange(lineRange)
+        }
+    }
+
+    private func lineContentRange(from lineRange: NSRange, in text: NSString) -> NSRange {
+        var length = lineRange.length
+        while length > 0 {
+            let char = text.character(at: lineRange.location + length - 1)
+            if char == 10 || char == 13 {
+                length -= 1
+            } else {
+                break
+            }
+        }
+        return NSRange(location: lineRange.location, length: length)
+    }
+
+    private func clearCodeStyling(in range: NSRange) {
+        guard let textStorage, range.length > 0 else { return }
+
+        let existingCodeLanguage = textStorage.attribute(Self.codeLanguageAttribute, at: range.location, effectiveRange: nil) != nil
+        guard existingCodeLanguage else { return }
+
+        textStorage.removeAttribute(Self.codeTokenAttribute, range: range)
+        textStorage.removeAttribute(Self.codeLanguageAttribute, range: range)
+        textStorage.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: range)
+    }
+
+    private func applyCodeStyling(in range: NSRange, lineText: String, language: DetectedCodeLanguage) {
+        guard let textStorage, range.length > 0 else { return }
+
+        textStorage.addAttributes(
+            [
+                .foregroundColor: Self.codeDefaultForegroundColor,
+                Self.codeLanguageAttribute: language.rawValue,
+                Self.codeTokenAttribute: "base"
+            ],
+            range: range
+        )
+        applySyntaxTokens(in: range, text: lineText, language: language)
+    }
+
+    private func applySyntaxTokens(in range: NSRange, text: String, language: DetectedCodeLanguage) {
+        guard let textStorage else { return }
+        let nsText = text as NSString
+
+        func applyRegex(_ pattern: String, color: NSColor, options: NSRegularExpression.Options = []) {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
+            let full = NSRange(location: 0, length: nsText.length)
+            regex.enumerateMatches(in: text, options: [], range: full) { match, _, _ in
+                guard let match else { return }
+                let target = NSRange(location: range.location + match.range.location, length: match.range.length)
+                textStorage.addAttributes(
+                    [
+                        .foregroundColor: color,
+                        Self.codeTokenAttribute: "token"
+                    ],
+                    range: target
+                )
+            }
+        }
+
+        applyRegex(#""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#, color: Self.codeStringForegroundColor)
+        applyRegex(#"\b\d+(?:\.\d+)?\b"#, color: Self.codeNumberForegroundColor)
+
+        switch language {
+        case .swift:
+            applyRegex(#"\b(import|let|var|func|class|struct|enum|protocol|extension|if|else|guard|return|for|while|switch|case|default|try|catch|throw|async|await|nil|true|false)\b"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#"//.*$"#, color: Self.codeCommentForegroundColor)
+        case .python:
+            applyRegex(#"\b(def|class|import|from|as|if|elif|else|for|while|return|try|except|finally|with|lambda|yield|pass|break|continue|None|True|False)\b"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#"#.*$"#, color: Self.codeCommentForegroundColor)
+        case .javascript:
+            applyRegex(#"\b(const|let|var|function|class|if|else|return|import|from|export|default|async|await|try|catch|finally|new|null|true|false|undefined)\b"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#"//.*$"#, color: Self.codeCommentForegroundColor)
+        case .json:
+            applyRegex(#""[^"]*"\s*:"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#"\b(true|false|null)\b"#, color: Self.codeKeywordForegroundColor)
+        case .endpoint:
+            applyRegex(#"(https?://[^\s]+|/[A-Za-z0-9._~!$&'()*+,;=:@%/\-{}]+)"#, color: Self.codeStringForegroundColor)
+            applyRegex(#"\{[A-Za-z_][A-Za-z0-9_-]*\}"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#":[A-Za-z_][A-Za-z0-9_-]*"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#"\?[A-Za-z0-9_.-]+(?==)"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#"&[A-Za-z0-9_.-]+(?==)"#, color: Self.codeKeywordForegroundColor)
+            applyRegex(#"https?://"#, color: Self.codeCommentForegroundColor)
+        }
+    }
+
+    private func detectCodeLanguage(in text: String) -> DetectedCodeLanguage? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let swiftScore = scoreForSwift(trimmed)
+        let pythonScore = scoreForPython(trimmed)
+        let javascriptScore = scoreForJavaScript(trimmed)
+        let jsonScore = scoreForJSON(trimmed)
+        let endpointScore = scoreForEndpoint(trimmed)
+        let scores: [(DetectedCodeLanguage, Int)] = [
+            (.swift, swiftScore),
+            (.python, pythonScore),
+            (.javascript, javascriptScore),
+            (.json, jsonScore),
+            (.endpoint, endpointScore)
+        ]
+
+        guard let best = scores.max(by: { $0.1 < $1.1 }), best.1 > 0 else { return nil }
+        guard best.1 >= minimumScore(for: best.0) else { return nil }
+        if isLikelyProseLine(trimmed), best.1 < strongCodeScore(for: best.0) {
+            return nil
+        }
+        return best.0
+    }
+
+    private func minimumScore(for language: DetectedCodeLanguage) -> Int {
+        switch language {
+        case .swift: return 3
+        case .python: return 4
+        case .javascript: return 4
+        case .json: return 4
+        case .endpoint: return 5
+        }
+    }
+
+    private func strongCodeScore(for language: DetectedCodeLanguage) -> Int {
+        switch language {
+        case .swift: return 5
+        case .python: return 6
+        case .javascript: return 6
+        case .json: return 5
+        case .endpoint: return 6
+        }
+    }
+
+    private func isLikelyProseLine(_ text: String) -> Bool {
+        let words = text.split { !$0.isLetter && !$0.isNumber }
+        let punctuationSet = CharacterSet(charactersIn: "{}[]();:=<>`\"\\")
+        let punctuationCount = text.unicodeScalars.filter { punctuationSet.contains($0) }.count
+        let hasCodeShape = text.contains("{") || text.contains("}") || text.contains("=>") || text.contains("://")
+        return words.count >= 6 && punctuationCount <= 1 && !hasCodeShape
+    }
+
+    private func scoreForSwift(_ text: String) -> Int {
+        var score = 0
+        if text.contains("import ") { score += 3 }
+        if text.range(of: #"\b(let|var|func|struct|class|enum|protocol|extension|guard)\b"#, options: .regularExpression) != nil { score += 3 }
+        if text.contains("->") { score += 2 }
+        if text.contains(" if let ") || text.hasPrefix("if let ") { score += 2 }
+        if text.contains(":") && text.contains("{") { score += 1 }
+        return score
+    }
+
+    private func scoreForPython(_ text: String) -> Int {
+        var score = 0
+        if text.range(of: #"^\s*(def|class)\s+\w+\s*[\(:]"#, options: .regularExpression) != nil { score += 4 }
+        if text.range(of: #"\b(import|def|class|elif|except|lambda|None|True|False)\b"#, options: .regularExpression) != nil { score += 3 }
+        if text.range(of: #"\b(from\s+\w+\s+import|with\s+\w+.*:)\b"#, options: .regularExpression) != nil { score += 2 }
+        if text.hasSuffix(":") { score += 1 }
+        if text.contains("__name__") { score += 2 }
+        return score
+    }
+
+    private func scoreForJavaScript(_ text: String) -> Int {
+        var score = 0
+        if text.range(of: #"\b(const|let|var|function|console\.log|document\.|window\.)\b"#, options: .regularExpression) != nil { score += 4 }
+        if text.contains("=>") { score += 2 }
+        if text.contains("===") || text.contains("!==") { score += 1 }
+        if text.hasSuffix(";") { score += 1 }
+        return score
+    }
+
+    private func scoreForJSON(_ text: String) -> Int {
+        var score = 0
+        if text.range(of: #"^\s*[\{\[]\s*$"#, options: .regularExpression) != nil { score += 2 }
+        if text.range(of: #""[^"]+"\s*:"#, options: .regularExpression) != nil { score += 4 }
+        if text.range(of: #"\b(true|false|null)\b"#, options: .regularExpression) != nil { score += 1 }
+        if text.range(of: #"^\s*[\}\]]\s*,?\s*$"#, options: .regularExpression) != nil { score += 2 }
+        return score
+    }
+
+    private func scoreForEndpoint(_ text: String) -> Int {
+        var score = 0
+        if text.range(of: #"^https?://[^\s]+$"#, options: .regularExpression) != nil { score += 7 }
+        if text.range(of: #"^/[A-Za-z0-9._~!$&'()*+,;=:@%/\-{}]+$"#, options: .regularExpression) != nil { score += 6 }
+        if text.range(of: #"\b(url|endpoint|path)\b\s*:\s*/[A-Za-z0-9._~!$&'()*+,;=:@%/\-{}]+"#, options: [.regularExpression, .caseInsensitive]) != nil { score += 6 }
+        if text.range(of: #"\{[A-Za-z_][A-Za-z0-9_-]*\}"#, options: .regularExpression) != nil { score += 2 }
+        if text.range(of: #":[A-Za-z_][A-Za-z0-9_-]*"#, options: .regularExpression) != nil { score += 2 }
+        if text.contains("?") && text.contains("=") { score += 2 }
+        if text.range(of: #"\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b"#, options: .regularExpression) != nil { score += 2 }
+        return score
     }
 
     func normalizeListParagraphStylesIfNeeded() {
@@ -312,7 +592,7 @@ class CustomTextView: NSTextView {
 
             let font = (textStorage.attribute(.font, at: styleSourceIndex, effectiveRange: nil) as? NSFont)
                 ?? (typingAttributes[.font] as? NSFont)
-                ?? NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
+                ?? NSFont.systemFont(ofSize: Self.editorFontSize, weight: .regular)
 
             if let marker = listMarkerPrefix(in: trimmedLeading) {
                 let leadingIndent = widthOfLeadingWhitespace(leadingWhitespace, font: font, paragraphStyle: paragraph)
@@ -643,7 +923,8 @@ struct RichTextEditorView: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: Int.max, height: Int.max)
-        textView.textContainerInset = NSSize(width: 8, height: 16)
+        textView.textContainerInset = CustomTextView.editorTextInset
+        textView.textContainer?.lineFragmentPadding = CustomTextView.editorLineFragmentPadding
 
         textView.allowsUndo = true
         textView.isRichText = true
@@ -774,8 +1055,8 @@ struct RichTextEditorView: NSViewRepresentable {
                 toggleList(isCheckbox: false)
             } else if action == "checkbox" {
                 toggleList(isCheckbox: true)
-            } else if action == "font-sans" {
-                applyFontStyle(.sans)
+            } else if action == "font-system" || action == "font-sans" {
+                applyFontStyle(.system)
             } else if action == "font-serif" {
                 applyFontStyle(.serif)
             } else if action == "font-mono" {
@@ -955,7 +1236,7 @@ struct RichTextEditorView: NSViewRepresentable {
             if selected.length > 0 {
                 if !trimmedText.isEmpty {
                     let attrs: [NSAttributedString.Key: Any] = [
-                        .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular),
+                        .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize),
                         .foregroundColor: (textView.typingAttributes[.foregroundColor] as? NSColor) ?? Theme.editorTextNSColor,
                         .link: normalizedURL
                     ]
@@ -968,7 +1249,7 @@ struct RichTextEditorView: NSViewRepresentable {
             } else {
                 let anchor = trimmedText.isEmpty ? anchorText(from: normalizedURL) : trimmedText
                 let attrs: [NSAttributedString.Key: Any] = [
-                    .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular),
+                    .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize),
                     .foregroundColor: (textView.typingAttributes[.foregroundColor] as? NSColor) ?? Theme.editorTextNSColor,
                     .link: normalizedURL
                 ]
@@ -1032,7 +1313,7 @@ struct RichTextEditorView: NSViewRepresentable {
             let traits = current.fontDescriptor.symbolicTraits
             let base: NSFont
             switch style {
-            case .sans:
+            case .system:
                 base = NSFont.systemFont(ofSize: size)
             case .serif:
                 base = NSFont(name: "Times New Roman", size: size) ?? NSFont.systemFont(ofSize: size)
@@ -1064,12 +1345,12 @@ struct RichTextEditorView: NSViewRepresentable {
                 textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
                     let current = (value as? NSFont)
                         ?? (textView.typingAttributes[.font] as? NSFont)
-                        ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular)
+                        ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
                     textStorage.addAttribute(.font, value: resized(current), range: range)
                 }
             } else {
                 let current = (textView.typingAttributes[.font] as? NSFont)
-                    ?? NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize, weight: .regular)
+                    ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
                 textView.typingAttributes[.font] = resized(current)
             }
             saveState()
@@ -1234,7 +1515,7 @@ struct RichTextEditorView: NSViewRepresentable {
             var isStrikethrough = false
             var isBullet = false
             var isCheckbox = false
-            var fontStyle: EditorFontStyle = .mono
+            var fontStyle: EditorFontStyle = .system
             
             if let font = attrs[.font] as? NSFont {
                 let traits = font.fontDescriptor.symbolicTraits
@@ -1245,7 +1526,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 } else if font.familyName?.lowercased().contains("times") == true || font.fontName.lowercased().contains("serif") {
                     fontStyle = .serif
                 } else {
-                    fontStyle = .sans
+                    fontStyle = .system
                 }
             }
             if let underlineStyle = attrs[.underlineStyle] as? Int, underlineStyle > 0 {
@@ -1285,6 +1566,9 @@ struct RichTextEditorView: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            if let customTextView = textView as? CustomTextView {
+                customTextView.registerPendingEdit(affectedRange: affectedCharRange, replacementString: replacementString)
+            }
             guard let replacement = replacementString else { return true }
 
             // Space near list marker indents list item one level (Notion-style).

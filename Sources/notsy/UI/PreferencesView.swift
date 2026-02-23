@@ -15,6 +15,7 @@ struct PreferencesView: View {
     @State private var notionMessage: String?
     @State private var isTestingNotionConnection = false
     @State private var notionAutosaveTask: Task<Void, Never>?
+    @State private var showDeleteUnpinnedConfirmation = false
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
 
@@ -211,6 +212,13 @@ struct PreferencesView: View {
         }
     }
 
+    private func deleteAllUnpinnedNotes() {
+        let toDelete = store.notes.filter { !$0.pinned }
+        for note in toDelete {
+            store.delete(note)
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -338,10 +346,7 @@ struct PreferencesView: View {
                         .font(.subheadline)
                     
                     Button(action: {
-                        let toDelete = store.notes.filter { !$0.pinned }
-                        for note in toDelete {
-                            store.delete(note)
-                        }
+                        showDeleteUnpinnedConfirmation = true
                     }) {
                         Text("Delete All Unpinned Notes")
                     }
@@ -371,6 +376,19 @@ struct PreferencesView: View {
         .onDisappear {
             notionAutosaveTask?.cancel()
             removeKeyMonitor()
+        }
+        .confirmationDialog(
+            "Delete all unpinned notes?",
+            isPresented: $showDeleteUnpinnedConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                deleteAllUnpinnedNotes()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let count = store.notes.filter { !$0.pinned }.count
+            Text("This will permanently delete \(count) unpinned note\(count == 1 ? "" : "s").")
         }
         .frame(width: 480, height: 560)
     }
