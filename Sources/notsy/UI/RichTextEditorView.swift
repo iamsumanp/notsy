@@ -13,6 +13,8 @@ class CustomTextView: NSTextView {
     static let editorFontSize: CGFloat = 15
     private static let imageThumbnailWidth: CGFloat = 56
     private static let imageThumbnailMaxHeight: CGFloat = 34
+    private static let fallbackTabInterval: CGFloat = 28
+    static let bulletMarkers: [String] = ["• ", "◦ ", "∙ "]
     private var isNormalizingAttachments = false
     private var isNormalizingListParagraphStyles = false
 
@@ -284,13 +286,125 @@ class CustomTextView: NSTextView {
         isNormalizingListParagraphStyles = true
         defer { isNormalizingListParagraphStyles = false }
 
-        let fullRange = NSRange(location: 0, length: textStorage.length)
-        textStorage.enumerateAttribute(.paragraphStyle, in: fullRange, options: []) { value, range, _ in
-            guard let paragraph = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle else { return }
-            guard !paragraph.textLists.isEmpty else { return }
-            paragraph.textLists = []
-            textStorage.addAttribute(.paragraphStyle, value: paragraph, range: range)
+        let fullString = textStorage.string as NSString
+        var paragraphLocation = 0
+
+        while paragraphLocation < fullString.length {
+            let paragraphRange = fullString.paragraphRange(for: NSRange(location: paragraphLocation, length: 0))
+            let paragraphText = fullString.substring(with: paragraphRange)
+            let leadingWhitespace = String(paragraphText.prefix(while: { $0 == " " || $0 == "\t" }))
+            let trimmedLeading = String(paragraphText.drop(while: { $0 == " " || $0 == "\t" }))
+
+            let styleSourceIndex = min(paragraphRange.location, max(0, textStorage.length - 1))
+            let styleSource = textStorage.attribute(.paragraphStyle, at: styleSourceIndex, effectiveRange: nil) as? NSParagraphStyle
+            let paragraph = (styleSource?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            var didChange = false
+
+            if !paragraph.textLists.isEmpty {
+                paragraph.textLists = []
+                didChange = true
+            }
+
+            if paragraph.lineSpacing != 4 {
+                paragraph.lineSpacing = 4
+                didChange = true
+            }
+
+            let font = (textStorage.attribute(.font, at: styleSourceIndex, effectiveRange: nil) as? NSFont)
+                ?? (typingAttributes[.font] as? NSFont)
+                ?? NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
+
+            if let marker = listMarkerPrefix(in: trimmedLeading) {
+                let leadingIndent = widthOfLeadingWhitespace(leadingWhitespace, font: font, paragraphStyle: paragraph)
+                let hangingIndent = leadingIndent + textWidth(marker, font: font)
+
+                // Keep first line natural (actual tabs/spaces + marker chars), and only indent wrapped lines
+                // to the text start after the marker.
+                if abs(paragraph.firstLineHeadIndent) > 0.25 {
+                    paragraph.firstLineHeadIndent = 0
+                    didChange = true
+                }
+                if abs(paragraph.headIndent - hangingIndent) > 0.25 {
+                    paragraph.headIndent = hangingIndent
+                    didChange = true
+                }
+            } else {
+                if abs(paragraph.firstLineHeadIndent) > 0.25 {
+                    paragraph.firstLineHeadIndent = 0
+                    didChange = true
+                }
+                if abs(paragraph.headIndent) > 0.25 {
+                    paragraph.headIndent = 0
+                    didChange = true
+                }
+            }
+
+            if didChange {
+                textStorage.addAttribute(.paragraphStyle, value: paragraph, range: paragraphRange)
+            }
+
+            paragraphLocation = NSMaxRange(paragraphRange)
         }
+    }
+
+    static func bulletMarker(forLeadingWhitespace whitespace: String) -> String {
+        let level = listIndentLevel(fromLeadingWhitespace: whitespace)
+        return bulletMarkers[level % bulletMarkers.count]
+    }
+
+    static func listIndentLevel(fromLeadingWhitespace whitespace: String) -> Int {
+        var level = 0
+        var spaces = 0
+        for char in whitespace {
+            if char == "\t" {
+                level += 1
+            } else if char == " " {
+                spaces += 1
+                if spaces == 4 {
+                    level += 1
+                    spaces = 0
+                }
+            }
+        }
+        return level
+    }
+
+    static func bulletMarkerPrefix(in text: String) -> String? {
+        for marker in bulletMarkers where text.hasPrefix(marker) {
+            return marker
+        }
+        // Legacy marker from previous build; keep behavior stable for existing notes.
+        if text.hasPrefix("▪ ") { return "▪ " }
+        return nil
+    }
+
+    private func listMarkerPrefix(in text: String) -> String? {
+        if let marker = Self.bulletMarkerPrefix(in: text) { return marker }
+        if text.hasPrefix("○ ") { return "○ " }
+        if text.hasPrefix("◉ ") { return "◉ " }
+        if text.hasPrefix("- ") { return "- " }
+        return nil
+    }
+
+    private func textWidth(_ text: String, font: NSFont) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    private func widthOfLeadingWhitespace(_ whitespace: String, font: NSFont, paragraphStyle: NSParagraphStyle) -> CGFloat {
+        let spaceWidth = textWidth(" ", font: font)
+        let tabInterval = paragraphStyle.defaultTabInterval > 0 ? paragraphStyle.defaultTabInterval : Self.fallbackTabInterval
+        var width: CGFloat = 0
+
+        for char in whitespace {
+            if char == " " {
+                width += spaceWidth
+            } else if char == "\t" {
+                let remainder = width.truncatingRemainder(dividingBy: tabInterval)
+                width += remainder == 0 ? tabInterval : (tabInterval - remainder)
+            }
+        }
+
+        return width
     }
 
     func refreshDetectedLinks() {
@@ -414,7 +528,8 @@ class CustomTextView: NSTextView {
         let lineRange = ns.lineRange(for: NSRange(location: probeLocation, length: 0))
         let lineString = ns.substring(with: lineRange)
         let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
-        guard leadingStripped.hasPrefix("•") || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
+        let isBullet = CustomTextView.bulletMarkerPrefix(in: leadingStripped) != nil
+        guard isBullet || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
 
         if outdent {
             if lineString.hasPrefix("\t") {
@@ -427,6 +542,7 @@ class CustomTextView: NSTextView {
         } else {
             insertText("\t", replacementRange: NSRange(location: lineRange.location, length: 0))
         }
+        normalizeBulletMarkerForCurrentLine()
 
         if let delegate = self.delegate as? RichTextEditorView.Coordinator {
             delegate.saveState()
@@ -447,7 +563,8 @@ class CustomTextView: NSTextView {
         let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
 
         guard !leadingWhitespace.isEmpty else { return false }
-        guard leadingStripped.hasPrefix("•") || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
+        let isBullet = CustomTextView.bulletMarkerPrefix(in: leadingStripped) != nil
+        guard isBullet || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
 
         let markerStart = lineRange.location + leadingWhitespace.utf16.count
         let markerEnd = markerStart + 2
@@ -463,10 +580,30 @@ class CustomTextView: NSTextView {
             outdentLength = 1
         }
         insertText("", replacementRange: NSRange(location: markerStart - outdentLength, length: outdentLength))
+        normalizeBulletMarkerForCurrentLine()
         if let delegate = self.delegate as? RichTextEditorView.Coordinator {
             delegate.saveState()
         }
         return true
+    }
+
+    private func normalizeBulletMarkerForCurrentLine() {
+        let selected = selectedRange()
+        let ns = string as NSString
+        guard ns.length > 0 else { return }
+
+        let probeLocation = max(0, min(selected.location, ns.length) - 1)
+        let lineRange = ns.lineRange(for: NSRange(location: probeLocation, length: 0))
+        let lineString = ns.substring(with: lineRange)
+        let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
+        let trimmed = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
+
+        guard let currentBullet = Self.bulletMarkerPrefix(in: trimmed) else { return }
+        let expectedBullet = Self.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+        guard currentBullet != expectedBullet else { return }
+
+        let markerLocation = lineRange.location + leadingWhitespace.utf16.count
+        insertText(expectedBullet, replacementRange: NSRange(location: markerLocation, length: currentBullet.utf16.count))
     }
 
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
@@ -963,7 +1100,6 @@ struct RichTextEditorView: NSViewRepresentable {
             
             textView.undoManager?.beginUndoGrouping()
             
-            let bulletStr = "• "
             let checkStr = "○ "
             let checkedStr = "◉ "
             
@@ -971,6 +1107,8 @@ struct RichTextEditorView: NSViewRepresentable {
                 let lineString = text.substring(with: lineRange)
                 let trimmed = lineString.trimmingCharacters(in: .whitespaces)
                 let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
+                let bulletForLevel = CustomTextView.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+                let existingBullet = CustomTextView.bulletMarkerPrefix(in: trimmed)
                 
                 if isCheckbox {
                     if trimmed.hasPrefix(checkStr) {
@@ -978,22 +1116,22 @@ struct RichTextEditorView: NSViewRepresentable {
                         textView.textStorage?.addAttribute(.foregroundColor, value: NSColor.systemGreen, range: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 1))
                     } else if trimmed.hasPrefix(checkedStr) {
                         textView.insertText("", replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkedStr.utf16.count))
-                    } else if trimmed.hasPrefix(bulletStr) {
-                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bulletStr.utf16.count))
+                    } else if let bullet = existingBullet {
+                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bullet.utf16.count))
                     } else {
                         if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 { continue }
                         textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 0))
                     }
                 } else {
-                    if trimmed.hasPrefix(bulletStr) {
-                        textView.insertText("", replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bulletStr.utf16.count))
+                    if let bullet = existingBullet {
+                        textView.insertText("", replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bullet.utf16.count))
                     } else if trimmed.hasPrefix(checkStr) {
-                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkStr.utf16.count))
+                        textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkStr.utf16.count))
                     } else if trimmed.hasPrefix(checkedStr) {
-                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkedStr.utf16.count))
+                        textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkedStr.utf16.count))
                     } else {
                         if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 { continue }
-                        textView.insertText(bulletStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 0))
+                        textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 0))
                     }
                 }
             }
@@ -1124,7 +1262,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
                 let lineString = text.substring(with: lineRange)
                 let trimmed = lineString.trimmingCharacters(in: .whitespaces)
-                if trimmed.hasPrefix("• ") { isBullet = true }
+                if CustomTextView.bulletMarkerPrefix(in: trimmed) != nil { isBullet = true }
                 else if trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") { isCheckbox = true }
             }
             
@@ -1163,25 +1301,28 @@ struct RichTextEditorView: NSViewRepresentable {
                 }
             }
 
-            // Intercept Markdown "- " at start/indent and convert into "• " synchronously.
+            // Intercept Markdown "- " at start/indent and convert into a bullet synchronously.
             if replacement == " " {
                 let text = textView.string as NSString
-                if affectedCharRange.location > 0 {
-                    let prevCharIndex = affectedCharRange.location - 1
-                    let prevChar = text.substring(with: NSRange(location: prevCharIndex, length: 1))
+                let lineRange = text.lineRange(for: NSRange(location: affectedCharRange.location, length: 0))
+                let beforeCursorLength = max(0, affectedCharRange.location - lineRange.location)
+                let beforeCursor = text.substring(with: NSRange(location: lineRange.location, length: beforeCursorLength))
 
-                    if prevChar == "-" {
-                        let lineRange = text.lineRange(for: NSRange(location: affectedCharRange.location, length: 0))
-                        let prefixRange = NSRange(location: lineRange.location, length: max(0, prevCharIndex - lineRange.location))
-                        let prefix = text.substring(with: prefixRange)
-                        let isIndentedStart = prefix.allSatisfy { $0 == " " || $0 == "\t" }
-                        if lineRange.location == prevCharIndex || isIndentedStart {
-                            textView.undoManager?.beginUndoGrouping()
-                            textView.insertText("• ", replacementRange: NSRange(location: prevCharIndex, length: 1))
-                            textView.undoManager?.endUndoGrouping()
-                            saveState()
-                            return false
-                        }
+                // Robust match: line prefix must be only indentation + a single trailing "-"
+                if let dashIndex = beforeCursor.lastIndex(of: "-") {
+                    let prefixBeforeDash = String(beforeCursor[..<dashIndex])
+                    let suffixAfterDash = String(beforeCursor[beforeCursor.index(after: dashIndex)...])
+                    let isListDashPattern = suffixAfterDash.isEmpty && prefixBeforeDash.allSatisfy { $0 == " " || $0 == "\t" }
+
+                    if isListDashPattern {
+                        let leadingWhitespace = prefixBeforeDash
+                        let bulletForLevel = CustomTextView.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+                        let dashLocation = lineRange.location + prefixBeforeDash.utf16.count
+                        textView.undoManager?.beginUndoGrouping()
+                        textView.insertText(bulletForLevel, replacementRange: NSRange(location: dashLocation, length: 1))
+                        textView.undoManager?.endUndoGrouping()
+                        saveState()
+                        return false
                     }
                 }
             }
@@ -1218,7 +1359,7 @@ struct RichTextEditorView: NSViewRepresentable {
             let trimmedLine = lineString.trimmingCharacters(in: .whitespaces)
             
             var prefixToContinue = ""
-            if trimmedLine.hasPrefix("• ") { prefixToContinue = "• " }
+            if let bullet = CustomTextView.bulletMarkerPrefix(in: trimmedLine) { prefixToContinue = bullet }
             else if trimmedLine.hasPrefix("○ ") || trimmedLine.hasPrefix("◉ ") { prefixToContinue = "○ " }
             
             if !prefixToContinue.isEmpty {
@@ -1271,7 +1412,8 @@ struct RichTextEditorView: NSViewRepresentable {
             let lineString = text.substring(with: lineRange)
             let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
             
-            if leadingStripped.hasPrefix("•") || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") {
+            let isBullet = CustomTextView.bulletMarkerPrefix(in: leadingStripped) != nil
+            if isBullet || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") {
                 textView.insertText("\t", replacementRange: NSRange(location: lineRange.location, length: 0))
                 saveState()
                 return true
@@ -1306,7 +1448,8 @@ struct RichTextEditorView: NSViewRepresentable {
             let lineString = text.substring(with: lineRange)
             let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
             let trimmed = lineString.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("• ") || trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") else { return false }
+            let isBullet = CustomTextView.bulletMarkerPrefix(in: trimmed) != nil
+            guard isBullet || trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") else { return false }
 
             let markerStart = lineRange.location + leadingWhitespace.utf16.count
             let contentStart = markerStart + 2
