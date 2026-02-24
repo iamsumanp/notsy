@@ -19,6 +19,54 @@ struct EditorState: Equatable {
     var hasSelection: Bool = false
 }
 
+private enum AIQuickAction: String, CaseIterable, Identifiable {
+    case improveWriting
+    case proofread
+    case makeShorter
+    case simplifyLanguage
+    case makeLonger
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .improveWriting: return "Improve writing"
+        case .proofread: return "Proofread"
+        case .makeShorter: return "Make shorter"
+        case .simplifyLanguage: return "Simplify language"
+        case .makeLonger: return "Make longer"
+        }
+    }
+
+    var instruction: String {
+        switch self {
+        case .improveWriting:
+            return "Improve clarity, flow, and tone while preserving meaning."
+        case .proofread:
+            return "Proofread and fix grammar, spelling, and punctuation with minimal wording changes."
+        case .makeShorter:
+            return "Rewrite the text to be shorter and concise while preserving key meaning."
+        case .simplifyLanguage:
+            return "Rewrite using simpler language and shorter sentences."
+        case .makeLonger:
+            return "Expand the text with useful details while preserving intent and style."
+        }
+    }
+}
+
+private enum AIPopoverTrigger: String, Hashable {
+    case improve
+    case ask
+    case edit
+}
+
+private enum AIPanelState {
+    case input
+    case loading
+    case result
+    case error
+}
+
 struct MainPanel: View {
     var onClose: () -> Void
     @Environment(NoteStore.self) private var store
@@ -45,6 +93,19 @@ struct MainPanel: View {
     @State private var keyDownMonitor: Any?
     @State private var zenModeEnabled = false
     @State private var showClearUnpinnedConfirmation = false
+    @State private var selectedEditorText = ""
+    @State private var selectedEditorRange: NSRange?
+    @State private var aiGeneratedText = ""
+    @State private var aiErrorMessage: String?
+    @State private var aiLastInstruction = ""
+    @State private var aiLastSelectionText = ""
+    @State private var aiLastSelectionRange: NSRange?
+    @State private var aiTask: Task<Void, Never>?
+    @State private var aiIsRunning = false
+    @State private var pendingEditorAIAction: EditorAIActionRequest?
+    @State private var aiPopoverTrigger: AIPopoverTrigger?
+    @State private var aiCustomPrompt = ""
+    @AppStorage(AIWritingService.enabledDefaultsKey) private var aiEnabled: Bool = false
 
     enum FocusField: Hashable {
         case search
@@ -87,7 +148,7 @@ struct MainPanel: View {
     }
 
     private var isSearchCompact: Bool {
-        focus == .editor || focus == .title || focus == .find
+        focus == .editor || focus == .title || focus == .find || aiPopoverTrigger != nil
     }
 
     private var sidebarIsVisible: Bool {
@@ -249,58 +310,55 @@ struct MainPanel: View {
                         VStack(alignment: .leading, spacing: 8) {
                             titleEditor(for: note, selectedNoteID: selectedNoteID)
 
-                            formattingToolbar()
+                            formattingToolbar(note: note)
                         }
                         .zIndex(showColorPalette ? 50 : 1)
                         .overlay(alignment: .topTrailing) {
-                            VStack(alignment: .trailing, spacing: 8) {
-                                if showEditorFind {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "magnifyingglass")
-                                            .font(.system(size: 11))
-                                            .foregroundColor(Theme.textMuted)
-                                        TextField("Find in note", text: $editorFindQuery)
-                                            .font(.system(size: 12))
-                                            .textFieldStyle(.plain)
-                                            .foregroundColor(Theme.text)
-                                            .focused($focus, equals: .find)
-                                            .onChange(of: editorFindQuery) { _, newValue in
-                                                postEditorFindAction("update", query: newValue)
-                                            }
-                                        Button(action: { postEditorFindAction("prev") }) {
-                                            Image(systemName: "chevron.up")
-                                                .font(.system(size: 10, weight: .semibold))
+                            if showEditorFind {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.textMuted)
+                                    TextField("Find in note", text: $editorFindQuery)
+                                        .font(.system(size: 12))
+                                        .textFieldStyle(.plain)
+                                        .foregroundColor(Theme.text)
+                                        .focused($focus, equals: .find)
+                                        .onChange(of: editorFindQuery) { _, newValue in
+                                            postEditorFindAction("update", query: newValue)
                                         }
-                                        .buttonStyle(PointerPlainButtonStyle())
-                                        Button(action: { postEditorFindAction("next") }) {
-                                            Image(systemName: "chevron.down")
-                                                .font(.system(size: 10, weight: .semibold))
-                                        }
-                                        .buttonStyle(PointerPlainButtonStyle())
-                                        Button(action: {
-                                            showEditorFind = false
-                                            editorFindQuery = ""
-                                            postEditorFindAction("close")
-                                            focus = .editor
-                                        }) {
-                                            Image(systemName: "xmark")
-                                                .font(.system(size: 10, weight: .semibold))
-                                        }
-                                        .buttonStyle(PointerPlainButtonStyle())
+                                    Button(action: { postEditorFindAction("prev") }) {
+                                        Image(systemName: "chevron.up")
+                                            .font(.system(size: 10, weight: .semibold))
                                     }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 6)
-                                    .frame(width: 260)
-                                    .background(Theme.sidebarBg)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 8).stroke(
-                                            Theme.border, lineWidth: 1)
-                                    )
-                                    .cornerRadius(8)
+                                    .buttonStyle(PointerPlainButtonStyle())
+                                    Button(action: { postEditorFindAction("next") }) {
+                                        Image(systemName: "chevron.down")
+                                            .font(.system(size: 10, weight: .semibold))
+                                    }
+                                    .buttonStyle(PointerPlainButtonStyle())
+                                    Button(action: {
+                                        showEditorFind = false
+                                        editorFindQuery = ""
+                                        postEditorFindAction("close")
+                                        focus = .editor
+                                    }) {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 10, weight: .semibold))
+                                    }
+                                    .buttonStyle(PointerPlainButtonStyle())
                                 }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .frame(width: 260)
+                                .background(Theme.sidebarBg)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8).stroke(
+                                        Theme.border, lineWidth: 1)
+                                )
+                                .cornerRadius(8)
+                                .offset(x: 4, y: 0)
                             }
-                            // Keep actions aligned to the editor surface right edge.
-                            .offset(x: 4, y: 0)
                         }
                         .padding(.leading, editorUsesCompactSidebarSpacing ? 48 : 22)
                         .padding(.trailing, 22)
@@ -308,7 +366,13 @@ struct MainPanel: View {
                         .padding(.bottom, 12)
 
                         RichTextEditorWrapper(
-                            note: note, store: store, editorState: $editorState, isFocused: _focus
+                            note: note,
+                            store: store,
+                            editorState: $editorState,
+                            selectedText: $selectedEditorText,
+                            selectedRange: $selectedEditorRange,
+                            pendingAIAction: $pendingEditorAIAction,
+                            isFocused: _focus
                         )
                         .padding(.leading, editorUsesCompactSidebarSpacing ? 40 : 18)
                         .padding(.trailing, 18)
@@ -577,10 +641,7 @@ struct MainPanel: View {
             refreshSidebarPreviewCache()
             if let mostRecentID = mostRecentlyModifiedNoteID {
                 selectedNoteID = mostRecentID
-                // Delay slightly to let the view render before stealing focus into the NSViewRepresentable
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    focus = .editor
-                }
+                focusEditorWhenAvailable()
             } else {
                 focus = .search
             }
@@ -603,10 +664,29 @@ struct MainPanel: View {
         }
         .onChange(of: selectedNoteID) { _, _ in
             refreshSidebarPreviewCache()
+            resetAIOverlay(clearSelection: true)
             if showEditorFind {
                 showEditorFind = false
                 editorFindQuery = ""
                 postEditorFindAction("close")
+            }
+        }
+        .onChange(of: selectedEditorText) { oldValue, newValue in
+            if oldValue != newValue {
+                let oldTrimmed = oldValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let newTrimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if !newTrimmed.isEmpty, newTrimmed != oldTrimmed, !aiIsRunning {
+                    aiGeneratedText = ""
+                    aiErrorMessage = nil
+                } else if newTrimmed.isEmpty, !aiIsRunning, aiGeneratedText.isEmpty {
+                    aiErrorMessage = nil
+                }
+            }
+        }
+        .onChange(of: aiEnabled) { _, isEnabled in
+            if !isEnabled {
+                resetAIOverlay(clearSelection: false)
             }
         }
         .onAppear {
@@ -619,14 +699,17 @@ struct MainPanel: View {
             }
             if selectedNoteID == nil, let mostRecentID = mostRecentlyModifiedNoteID {
                 selectedNoteID = mostRecentID
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    focus = .editor
-                }
+                focusEditorWhenAvailable()
             } else {
-                focus = .search
+                if selectedNoteID != nil {
+                    focusEditorWhenAvailable()
+                } else {
+                    focus = .search
+                }
             }
         }
         .onDisappear {
+            aiTask?.cancel()
             if let keyDownMonitor {
                 NSEvent.removeMonitor(keyDownMonitor)
                 self.keyDownMonitor = nil
@@ -659,6 +742,28 @@ struct MainPanel: View {
         guard AppDelegate.shared?.panel.isKeyWindow == true else { return event }
         // While the custom link modal is open, let its text fields handle all typing.
         if showLinkEditor { return event }
+        // While AI popover input is open, let its text fields own keyboard handling.
+        if aiPopoverTrigger != nil {
+            if event.keyCode == 53 {
+                aiPopoverTrigger = nil
+                return nil
+            }
+            return event
+        }
+
+        // If global search is focused only due startup timing, direct normal typing to editor.
+        if focus == .search,
+            queryBuffer.isEmpty,
+            selectedNoteID != nil,
+            !event.modifierFlags.contains(.command),
+            !event.modifierFlags.contains(.option),
+            !event.modifierFlags.contains(.control),
+            let chars = event.characters,
+            chars.rangeOfCharacter(from: .alphanumerics) != nil
+        {
+            focus = .editor
+            return event
+        }
 
         // Up/Down in global search should navigate matched notes.
         if focus == .search || focus == .list,
@@ -718,7 +823,6 @@ struct MainPanel: View {
         if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift)
             && event.keyCode == 3
         {
-            exitZenMode()
             showEditorFind = true
             DispatchQueue.main.async {
                 focus = .find
@@ -780,7 +884,7 @@ struct MainPanel: View {
         }
         if focus != .editor && focus != .title && focus != .search && focus != .find {
             if let chars = event.characters, chars.rangeOfCharacter(from: .alphanumerics) != nil {
-                focus = .search
+                focus = selectedNoteID == nil ? .search : .editor
             }
         }
         if event.keyCode == 51 && focus == .list {
@@ -878,6 +982,532 @@ struct MainPanel: View {
         max(200, min(460, sidebarRuntimeWidth))
     }
 
+    private var hasCurrentSelection: Bool {
+        let trimmed = selectedEditorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && (selectedEditorRange?.length ?? 0) > 0
+    }
+
+    private func focusEditorWhenAvailable() {
+        guard selectedNoteID != nil else {
+            focus = .search
+            return
+        }
+        DispatchQueue.main.async {
+            focus = .editor
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+            if focus == nil || focus == .search {
+                focus = .editor
+            }
+        }
+    }
+
+    private var aiPanelState: AIPanelState {
+        if aiIsRunning { return .loading }
+        if !aiGeneratedText.isEmpty { return .result }
+        if aiErrorMessage?.isEmpty == false { return .error }
+        return .input
+    }
+
+    private var canRetryAIRequest: Bool {
+        !aiLastInstruction.isEmpty && !aiLastSelectionText.isEmpty
+    }
+
+    private var aiPanelStatusText: String {
+        switch aiPanelState {
+        case .input: return "Input"
+        case .loading: return "Generating"
+        case .result: return "Result"
+        case .error: return "Error"
+        }
+    }
+
+    private func aiPopoverBinding(for trigger: AIPopoverTrigger) -> Binding<Bool> {
+        Binding(
+            get: { aiPopoverTrigger == trigger },
+            set: { isPresented in
+                if isPresented {
+                    aiPopoverTrigger = trigger
+                } else if aiPopoverTrigger == trigger {
+                    aiPopoverTrigger = nil
+                }
+            }
+        )
+    }
+
+    private func openAIPopover(_ trigger: AIPopoverTrigger) {
+        // Keep layout stable and prevent search focus from visually expanding while AI is active.
+        focus = .editor
+        // Force a fresh presentation cycle in case AppKit didn't clear the previous binding state yet.
+        if aiPopoverTrigger == trigger {
+            aiPopoverTrigger = nil
+            DispatchQueue.main.async {
+                aiPopoverTrigger = trigger
+            }
+            return
+        }
+        if trigger == .improve && aiCustomPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            aiCustomPrompt = AIQuickAction.improveWriting.instruction
+        }
+        if trigger == .edit {
+            aiCustomPrompt = ""
+        }
+        aiPopoverTrigger = trigger
+    }
+
+    private func applyAIReplaceSelection() {
+        pendingEditorAIAction = EditorAIActionRequest(
+            kind: .replaceSelection,
+            text: aiGeneratedText,
+            targetRange: aiLastSelectionRange
+        )
+        resetAIOverlay(clearSelection: false, clearPendingAction: false)
+        aiPopoverTrigger = nil
+    }
+
+    private func applyAIInsertBelowSelection() {
+        pendingEditorAIAction = EditorAIActionRequest(
+            kind: .insertBelowSelection,
+            text: aiGeneratedText,
+            targetRange: aiLastSelectionRange
+        )
+        resetAIOverlay(clearSelection: false, clearPendingAction: false)
+        aiPopoverTrigger = nil
+    }
+
+    private func dismissAIError() {
+        aiErrorMessage = nil
+    }
+
+    private func cancelAIRequest() {
+        aiTask?.cancel()
+        aiTask = nil
+        aiIsRunning = false
+    }
+
+    private func aiActionChip(_ title: String, instruction: String) -> some View {
+        Button(title) {
+            aiCustomPrompt = instruction
+        }
+        .buttonStyle(PointerPlainButtonStyle())
+        .font(.system(size: 11, weight: .medium))
+        .foregroundColor(Theme.textMuted)
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .background(Theme.bg.opacity(0.45))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.border.opacity(0.7), lineWidth: 0.8))
+        .cornerRadius(5)
+        .disabled(aiIsRunning)
+    }
+
+    @ViewBuilder
+    private func aiAssistantChipGroup(note: Note) -> some View {
+        if aiEnabled {
+            Button(action: {
+                openAIPopover(.improve)
+            }) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 24, height: 22)
+                    .contentShape(Rectangle())
+                    .foregroundColor(Theme.textMuted)
+                    .background(
+                        aiPopoverTrigger == .improve ? Theme.selection.opacity(0.25) : Color.clear
+                    )
+                    .cornerRadius(4)
+            }
+            .buttonStyle(PointerPlainButtonStyle())
+            .disabled(aiIsRunning)
+            .popover(
+                isPresented: aiPopoverBinding(for: .improve),
+                attachmentAnchor: .point(.bottom),
+                arrowEdge: .top
+            ) {
+                aiAssistantPopover(note: note)
+            }
+            .padding(.horizontal, 4)
+            .frame(height: 24)
+            .background(Theme.bg.opacity(0.5))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Theme.border.opacity(0.9), lineWidth: 0.8)
+            )
+            .cornerRadius(6)
+        }
+    }
+
+    @ViewBuilder
+    private func aiResultPreview() -> some View {
+        let sourceText = aiLastSelectionText.isEmpty ? selectedEditorText : aiLastSelectionText
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Compare")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Theme.textMuted)
+
+            HStack(spacing: 10) {
+                aiPreviewColumn(
+                    title: "Current",
+                    text: sourceText,
+                    background: Color.red.opacity(0.10),
+                    border: Color.red.opacity(0.25)
+                )
+                aiPreviewColumn(
+                    title: "AI",
+                    text: aiGeneratedText,
+                    background: Color.green.opacity(0.10),
+                    border: Color.green.opacity(0.25)
+                )
+            }
+
+            Text("Select text in either pane and press Cmd+C to copy.")
+                .font(.system(size: 10))
+                .foregroundColor(Theme.textMuted)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 300, maxHeight: 300, alignment: .topLeading)
+        .background(Theme.sidebarBg.opacity(0.8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border.opacity(0.85), lineWidth: 0.8))
+        .cornerRadius(8)
+    }
+
+    private func aiPreviewColumn(
+        title: String,
+        text: String,
+        background: Color,
+        border: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Theme.textMuted)
+
+            ScrollView {
+                Text(text)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(background)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(border, lineWidth: 0.8))
+            .cornerRadius(6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func aiAssistantPopover(note: Note) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Prompt")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.textMuted)
+                    Spacer()
+                    Text(aiPanelStatusText)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.textMuted)
+                }
+
+                TextField("Describe how to transform the selected text...", text: $aiCustomPrompt)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .background(Theme.bg.opacity(0.5))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(Theme.border.opacity(0.9), lineWidth: 0.8)
+                    )
+                    .cornerRadius(7)
+                    .onSubmit {
+                        if !aiIsRunning {
+                            submitAskAI(note: note)
+                        }
+                    }
+                    .disabled(aiIsRunning)
+
+                HStack(spacing: 6) {
+                    aiActionChip("Concise", instruction: AIQuickAction.makeShorter.instruction)
+                    aiActionChip("Grammar", instruction: AIQuickAction.proofread.instruction)
+                    aiActionChip("Pro", instruction: AIQuickAction.improveWriting.instruction)
+                    aiActionChip(
+                        "Summary",
+                        instruction: "Summarize the selected text in 3 concise bullet points.")
+                    aiActionChip(
+                        "Bullets",
+                        instruction: "Rewrite the selected text as concise bullet points.")
+                    aiActionChip("Simple", instruction: AIQuickAction.simplifyLanguage.instruction)
+                }
+            }
+
+            Group {
+                switch aiPanelState {
+                case .input:
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Enter to run, Esc to close.")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textMuted)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, minHeight: 136, maxHeight: 136, alignment: .topLeading)
+                    .background(Theme.sidebarBg.opacity(0.8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border.opacity(0.85), lineWidth: 0.8))
+                    .cornerRadius(8)
+                case .loading:
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Generating suggestion...")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(Theme.textMuted)
+                        if let aiErrorMessage, aiErrorMessage.localizedCaseInsensitiveContains("network") {
+                            Text("Reconnecting...")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.textMuted)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 136, maxHeight: 136)
+                    .background(Theme.sidebarBg.opacity(0.8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border.opacity(0.85), lineWidth: 0.8))
+                    .cornerRadius(8)
+                case .result:
+                    aiResultPreview()
+                case .error:
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(aiErrorMessage ?? "Something went wrong while generating text.")
+                            .font(.system(size: 12))
+                            .foregroundColor(.red.opacity(0.9))
+                        Text("Your prompt is preserved. Try again or dismiss.")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textMuted)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, minHeight: 136, maxHeight: 136, alignment: .topLeading)
+                    .background(Theme.sidebarBg.opacity(0.8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.45), lineWidth: 0.8))
+                    .cornerRadius(8)
+                }
+            }
+
+            HStack(spacing: 8) {
+                switch aiPanelState {
+                case .input:
+                    Button("Run") {
+                        submitAskAI(note: note)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(aiCustomPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiIsRunning)
+
+                    Button("Close") {
+                        aiPopoverTrigger = nil
+                    }
+                    .buttonStyle(.bordered)
+                case .loading:
+                    Button("Cancel") {
+                        cancelAIRequest()
+                    }
+                    .buttonStyle(.bordered)
+                case .result:
+                    Button("Replace selection") {
+                        applyAIReplaceSelection()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Insert below") {
+                        applyAIInsertBelowSelection()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Try again") {
+                        retryLastAI(note: note)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!canRetryAIRequest || aiIsRunning)
+
+                    Button("Close") {
+                        aiPopoverTrigger = nil
+                    }
+                    .buttonStyle(.bordered)
+                case .error:
+                    Button("Try again") {
+                        retryLastAI(note: note)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canRetryAIRequest || aiIsRunning)
+
+                    Button("Dismiss") {
+                        dismissAIError()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 560)
+        .background(Theme.sidebarBg)
+    }
+
+    private func diffSegments(from original: String, to rewritten: String) -> (
+        prefix: String, removed: String, added: String, suffix: String
+    ) {
+        if original == rewritten {
+            return (prefix: original, removed: "", added: "", suffix: "")
+        }
+
+        let originalChars = Array(original)
+        let rewrittenChars = Array(rewritten)
+
+        var prefixCount = 0
+        let maxPrefix = min(originalChars.count, rewrittenChars.count)
+        while prefixCount < maxPrefix && originalChars[prefixCount] == rewrittenChars[prefixCount] {
+            prefixCount += 1
+        }
+
+        var suffixCount = 0
+        let remainingOriginal = originalChars.count - prefixCount
+        let remainingRewritten = rewrittenChars.count - prefixCount
+        let maxSuffix = min(remainingOriginal, remainingRewritten)
+        while suffixCount < maxSuffix
+            && originalChars[originalChars.count - 1 - suffixCount]
+                == rewrittenChars[rewrittenChars.count - 1 - suffixCount]
+        {
+            suffixCount += 1
+        }
+
+        let prefix = String(originalChars.prefix(prefixCount))
+        let suffix = suffixCount > 0 ? String(originalChars.suffix(suffixCount)) : ""
+        let removedRange = prefixCount..<(originalChars.count - suffixCount)
+        let addedRange = prefixCount..<(rewrittenChars.count - suffixCount)
+        let removed = removedRange.isEmpty ? "" : String(originalChars[removedRange])
+        let added = addedRange.isEmpty ? "" : String(rewrittenChars[addedRange])
+        return (prefix: prefix, removed: removed, added: added, suffix: suffix)
+    }
+
+    private func runAIQuickAction(_ action: AIQuickAction, note: Note) {
+        runAIInstruction(action.instruction, note: note)
+    }
+
+    private func submitAskAI(note: Note) {
+        let prompt = aiCustomPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            aiErrorMessage = "Enter a prompt for Ask AI."
+            return
+        }
+        runAIInstruction(prompt, note: note)
+    }
+
+    private func retryLastAI(note: Note) {
+        guard !aiLastInstruction.isEmpty, !aiLastSelectionText.isEmpty else { return }
+        runAIInstruction(
+            aiLastInstruction,
+            note: note,
+            selectionOverride: aiLastSelectionText,
+            rangeOverride: aiLastSelectionRange
+        )
+    }
+
+    private func runAIInstruction(
+        _ instruction: String,
+        note: Note,
+        selectionOverride: String? = nil,
+        rangeOverride: NSRange? = nil
+    ) {
+        let fullNoteText = note.plainTextCache
+        let fullNoteRange = NSRange(location: 0, length: (fullNoteText as NSString).length)
+        let hasSelection = (selectedEditorRange?.length ?? 0) > 0
+        let sourceSelection = selectionOverride ?? (hasSelection ? selectedEditorText : fullNoteText)
+        let trimmedSelection = sourceSelection.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceRange = rangeOverride ?? (hasSelection ? selectedEditorRange : fullNoteRange)
+        guard !trimmedSelection.isEmpty else {
+            aiErrorMessage = "Note is empty. Add text before using AI."
+            return
+        }
+        guard let sourceRange, sourceRange.length > 0 else {
+            aiErrorMessage = "Selection changed. Select text again and retry."
+            return
+        }
+
+        aiTask?.cancel()
+        aiGeneratedText = ""
+        aiErrorMessage = nil
+        aiIsRunning = true
+        aiLastInstruction = instruction
+        aiLastSelectionText = sourceSelection
+        aiLastSelectionRange = sourceRange
+
+        let contextSnapshot = note.plainTextCache
+        let selectionSnapshot = sourceSelection
+        let instructionSnapshot = instruction
+
+        aiTask = Task {
+            do {
+                let rewritten = try await AIWritingService.shared.rewriteSelection(
+                    selection: selectionSnapshot,
+                    instruction: instructionSnapshot,
+                    noteContext: contextSnapshot
+                )
+                try Task.checkCancellation()
+                await MainActor.run {
+                    aiGeneratedText = rewritten
+                    aiIsRunning = false
+                    aiErrorMessage = nil
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    aiIsRunning = false
+                }
+            } catch {
+                await MainActor.run {
+                    aiGeneratedText = ""
+                    aiIsRunning = false
+                    aiErrorMessage = aiErrorMessageText(for: error)
+                }
+            }
+
+            await MainActor.run {
+                aiTask = nil
+            }
+        }
+    }
+
+    private func aiErrorMessageText(for error: Error) -> String {
+        let lower = error.localizedDescription.lowercased()
+        if lower.contains("network") || lower.contains("offline") || lower.contains("connection") {
+            return "Network connection lost. Check connection and try again."
+        }
+        if lower.contains("timed out") || lower.contains("timeout") {
+            return "Request timed out. Try again or shorten the prompt."
+        }
+        return error.localizedDescription
+    }
+
+    private func resetAIOverlay(
+        clearSelection: Bool,
+        clearPendingAction: Bool = true
+    ) {
+        aiTask?.cancel()
+        aiTask = nil
+        aiGeneratedText = ""
+        aiErrorMessage = nil
+        aiIsRunning = false
+        aiLastInstruction = ""
+        aiLastSelectionText = ""
+        aiLastSelectionRange = nil
+        aiCustomPrompt = ""
+        aiPopoverTrigger = nil
+        if clearPendingAction {
+            pendingEditorAIAction = nil
+        }
+        if clearSelection {
+            selectedEditorText = ""
+            selectedEditorRange = nil
+        }
+    }
+
     private func postColorAction(_ action: String) {
         NotificationCenter.default.post(
             name: NSNotification.Name("NotsyToolbarAction"),
@@ -940,7 +1570,7 @@ struct MainPanel: View {
     }
 
     @ViewBuilder
-    private func formattingToolbar() -> some View {
+    private func formattingToolbar(note: Note) -> some View {
         HStack(spacing: 8) {
             Menu {
                 Button("System") { postToolbarAction("font-system") }
@@ -1100,6 +1730,8 @@ struct MainPanel: View {
                 }
                 .buttonStyle(PointerPlainButtonStyle())
                 .help("Insert or edit link")
+
+                aiAssistantChipGroup(note: note)
             }
         }
         .foregroundColor(Theme.textMuted)
@@ -1169,6 +1801,17 @@ struct SidebarView: View {
     @State private var dragOverRecentSection = false
     @State private var dropTargetNoteID: UUID?
     private let dragTypeIdentifier = UTType.plainText.identifier
+    private let sidebarDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter
+    }()
+
+    private struct RecentGroup: Identifiable {
+        let id: String
+        let title: String
+        let notes: [Note]
+    }
 
     var body: some View {
         let pinned = filteredNotes.filter { $0.pinned }
@@ -1294,19 +1937,22 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func recentSection(notes: [Note]) -> some View {
+        let groups = groupedRecentNotes(notes)
         VStack(alignment: .leading, spacing: 4) {
-            Text("NOTES")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(Theme.textMuted)
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                .padding(.bottom, 4)
+            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                Text(group.title)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(Theme.textMuted)
+                    .padding(.horizontal, 16)
+                    .padding(.top, index == 0 ? 16 : 12)
+                    .padding(.bottom, 4)
 
-            ForEach(notes) { note in
-                noteRow(note: note, destinationPinned: false)
+                ForEach(group.notes) { note in
+                    noteRow(note: note, destinationPinned: false)
+                }
             }
 
-            if notes.isEmpty, draggedNoteID != nil {
+            if groups.isEmpty, draggedNoteID != nil {
                 Text("Drop to unpin")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Theme.textMuted.opacity(0.8))
@@ -1328,6 +1974,66 @@ struct SidebarView: View {
         .onDrop(of: [dragTypeIdentifier], isTargeted: $dragOverRecentSection) { providers in
             handleDrop(providers: providers, toPinned: false)
         }
+    }
+
+    private func groupedRecentNotes(_ notes: [Note]) -> [RecentGroup] {
+        guard !notes.isEmpty else { return [] }
+
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        var today: [Note] = []
+        var yesterday: [Note] = []
+        var last7Days: [Note] = []
+        var olderByDate: [Date: [Note]] = [:]
+
+        for note in notes.sorted(by: { $0.updatedAt > $1.updatedAt }) {
+            let day = calendar.startOfDay(for: note.updatedAt)
+            if calendar.isDate(day, inSameDayAs: startOfToday) {
+                today.append(note)
+                continue
+            }
+            if let yesterdayDate = calendar.date(byAdding: .day, value: -1, to: startOfToday),
+                calendar.isDate(day, inSameDayAs: yesterdayDate)
+            {
+                yesterday.append(note)
+                continue
+            }
+            if let daysAgo = calendar.dateComponents([.day], from: day, to: startOfToday).day,
+                daysAgo > 1,
+                daysAgo <= 7
+            {
+                last7Days.append(note)
+                continue
+            }
+            olderByDate[day, default: []].append(note)
+        }
+
+        var groups: [RecentGroup] = []
+        if !today.isEmpty {
+            groups.append(RecentGroup(id: "today", title: "TODAY", notes: today))
+        }
+        if !yesterday.isEmpty {
+            groups.append(RecentGroup(id: "yesterday", title: "YESTERDAY", notes: yesterday))
+        }
+        if !last7Days.isEmpty {
+            groups.append(RecentGroup(id: "last7", title: "LAST 7 DAYS", notes: last7Days))
+        }
+
+        for day in olderByDate.keys.sorted(by: >) {
+            let title = sidebarDateFormatter.string(from: day).uppercased()
+            let groupNotes = olderByDate[day] ?? []
+            if !groupNotes.isEmpty {
+                groups.append(
+                    RecentGroup(
+                        id: "day-\(day.timeIntervalSinceReferenceDate)",
+                        title: title,
+                        notes: groupNotes
+                    )
+                )
+            }
+        }
+
+        return groups
     }
 
     @ViewBuilder
@@ -1493,9 +2199,13 @@ struct RichTextEditorWrapper: View {
     let note: Note
     let store: NoteStore
     @Binding var editorState: EditorState
+    @Binding var selectedText: String
+    @Binding var selectedRange: NSRange?
+    @Binding var pendingAIAction: EditorAIActionRequest?
     @FocusState var isFocused: MainPanel.FocusField?
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant
         .bluish.rawValue
+    private let placeholderLineHeight: CGFloat = CustomTextView.editorFontSize + 4
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -1503,16 +2213,24 @@ struct RichTextEditorWrapper: View {
                 note: note,
                 store: store,
                 editorState: $editorState,
+                selectedText: $selectedText,
+                selectedRange: $selectedRange,
+                pendingAIAction: $pendingAIAction,
                 themeVariantRaw: themeVariantRaw
             )
             .focused($isFocused, equals: .editor)
 
             if note.plainTextCache.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("Start writing...")
-                    .font(.system(size: 15, weight: .regular, design: .monospaced))
+                    .font(.system(size: CustomTextView.editorFontSize, weight: .regular, design: .monospaced))
                     .foregroundColor(Theme.textMuted.opacity(0.85))
-                    .padding(.leading, CustomTextView.editorTextInset.width + CustomTextView.editorLineFragmentPadding)
-                    .padding(.top, CustomTextView.editorTextInset.height)
+                    .padding(
+                        .leading,
+                        CustomTextView.editorTextInset.width
+                            + CustomTextView.editorLineFragmentPadding
+                            + 4
+                    )
+                    .padding(.top, CustomTextView.editorTextInset.height + placeholderVerticalOffset)
                     .allowsHitTesting(false)
             }
         }
@@ -1523,6 +2241,16 @@ struct RichTextEditorWrapper: View {
                     lineWidth: isFocused == .editor ? 1.6 : 1.2
                 )
         )
+    }
+
+    private var placeholderVerticalOffset: CGFloat {
+        guard let caretLocation = selectedRange?.location else { return 0 }
+        let safeLocation = max(0, min(caretLocation, note.plainTextCache.utf16.count))
+        let prefix = (note.plainTextCache as NSString).substring(to: safeLocation)
+        let lineBreaks = prefix.reduce(into: 0) { count, char in
+            if char == "\n" { count += 1 }
+        }
+        return CGFloat(lineBreaks) * placeholderLineHeight
     }
 }
 

@@ -15,6 +15,15 @@ struct PreferencesView: View {
     @State private var notionMessage: String?
     @State private var isTestingNotionConnection = false
     @State private var notionAutosaveTask: Task<Void, Never>?
+    @State private var aiEnabled: Bool
+    @State private var aiModel: String
+    @State private var openAIAPIKey: String
+    @State private var aiMessage: String?
+    @State private var aiAutosaveTask: Task<Void, Never>?
+    @State private var aiModelFetchTask: Task<Void, Never>?
+    @State private var availableAIModels: [String] = []
+    @State private var isLoadingAIModels = false
+    @State private var loadedModelsForAPIKey: String = ""
     @State private var showDeleteUnpinnedConfirmation = false
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
@@ -29,6 +38,12 @@ struct PreferencesView: View {
         _notionIntegrationSecret = State(initialValue: KeychainHelper.load(
             service: NotionSyncService.keychainService,
             account: NotionSyncService.legacyTokenKeychainAccount
+        ) ?? "")
+        _aiEnabled = State(initialValue: defaults.bool(forKey: AIWritingService.enabledDefaultsKey))
+        _aiModel = State(initialValue: defaults.string(forKey: AIWritingService.modelDefaultsKey) ?? AIWritingService.defaultModel)
+        _openAIAPIKey = State(initialValue: KeychainHelper.load(
+            service: AIWritingService.keychainService,
+            account: AIWritingService.apiKeyKeychainAccount
         ) ?? "")
     }
 
@@ -212,6 +227,107 @@ struct PreferencesView: View {
         }
     }
 
+    private func persistAISettings(showMessage: Bool) {
+        let trimmedModel = aiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModel = trimmedModel.isEmpty ? AIWritingService.defaultModel : trimmedModel
+        let trimmedAPIKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        UserDefaults.standard.set(aiEnabled, forKey: AIWritingService.enabledDefaultsKey)
+        UserDefaults.standard.set(normalizedModel, forKey: AIWritingService.modelDefaultsKey)
+
+        if !trimmedAPIKey.isEmpty {
+            guard KeychainHelper.save(
+                service: AIWritingService.keychainService,
+                account: AIWritingService.apiKeyKeychainAccount,
+                value: trimmedAPIKey
+            ) else {
+                aiMessage = "Failed to save OpenAI API key in Keychain."
+                return
+            }
+        }
+
+        guard showMessage else { return }
+        if aiEnabled {
+            aiMessage = trimmedAPIKey.isEmpty
+                ? "Saved. Add an OpenAI API key before using AI actions."
+                : "AI settings saved."
+        } else {
+            aiMessage = "AI settings saved."
+        }
+    }
+
+    private func saveAISettings() {
+        persistAISettings(showMessage: true)
+    }
+
+    private func scheduleAIAutosave() {
+        aiAutosaveTask?.cancel()
+        aiAutosaveTask = Task {
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                persistAISettings(showMessage: false)
+            }
+        }
+    }
+
+    private var trimmedAPIKey: String {
+        openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var modelPickerOptions: [String] {
+        var options = availableAIModels
+        let trimmedCurrentModel = aiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCurrentModel.isEmpty && !options.contains(trimmedCurrentModel) {
+            options.insert(trimmedCurrentModel, at: 0)
+        }
+        if options.isEmpty {
+            options = [AIWritingService.defaultModel]
+        }
+        return options
+    }
+
+    private func fetchAIModels(force: Bool = false) {
+        guard !trimmedAPIKey.isEmpty else {
+            aiModelFetchTask?.cancel()
+            availableAIModels = []
+            loadedModelsForAPIKey = ""
+            isLoadingAIModels = false
+            return
+        }
+        if !force && loadedModelsForAPIKey == trimmedAPIKey && !availableAIModels.isEmpty {
+            return
+        }
+
+        aiModelFetchTask?.cancel()
+        let key = trimmedAPIKey
+        isLoadingAIModels = true
+
+        aiModelFetchTask = Task {
+            do {
+                let models = try await AIWritingService.shared.listAvailableModels(apiKey: key)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    availableAIModels = models
+                    loadedModelsForAPIKey = key
+                    isLoadingAIModels = false
+                    if aiModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        aiModel = models.first ?? AIWritingService.defaultModel
+                    }
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    isLoadingAIModels = false
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingAIModels = false
+                    aiMessage = "Could not load models. You can still type a model manually."
+                }
+            }
+        }
+    }
+
     private func deleteAllUnpinnedNotes() {
         let toDelete = store.notes.filter { !$0.pinned }
         for note in toDelete {
@@ -322,6 +438,82 @@ struct PreferencesView: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("AI Writing")
+                        .font(.subheadline)
+
+                    Toggle("Enable AI text actions", isOn: $aiEnabled)
+                        .onTapGesture {
+                            cancelRecordingIfNeeded()
+                        }
+                        .onChange(of: aiEnabled) { _, _ in
+                            persistAISettings(showMessage: false)
+                        }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Model")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        if !trimmedAPIKey.isEmpty {
+                            HStack(spacing: 8) {
+                                Picker("Model", selection: $aiModel) {
+                                    ForEach(modelPickerOptions, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                                .labelsHidden()
+                                .onChange(of: aiModel) { _, _ in
+                                    scheduleAIAutosave()
+                                }
+
+                                Button(isLoadingAIModels ? "Loading..." : "Refresh") {
+                                    fetchAIModels(force: true)
+                                }
+                                .disabled(isLoadingAIModels)
+                            }
+                        } else {
+                            TextField(AIWritingService.defaultModel, text: $aiModel)
+                                .onTapGesture {
+                                    cancelRecordingIfNeeded()
+                                }
+                                .onChange(of: aiModel) { _, _ in
+                                    scheduleAIAutosave()
+                                }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("OpenAI API Key")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        SecureField("sk-...", text: $openAIAPIKey)
+                            .onTapGesture {
+                                cancelRecordingIfNeeded()
+                            }
+                            .onChange(of: openAIAPIKey) { _, _ in
+                                scheduleAIAutosave()
+                                fetchAIModels()
+                            }
+                    }
+
+                    HStack {
+                        Button("Save AI Settings") {
+                            saveAISettings()
+                        }
+                        Text("API key is stored in macOS Keychain.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    if let aiMessage {
+                        Text(aiMessage)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Appearance")
                         .font(.subheadline)
 
@@ -373,8 +565,13 @@ struct PreferencesView: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear {
+            fetchAIModels()
+        }
         .onDisappear {
             notionAutosaveTask?.cancel()
+            aiAutosaveTask?.cancel()
+            aiModelFetchTask?.cancel()
             removeKeyMonitor()
         }
         .confirmationDialog(

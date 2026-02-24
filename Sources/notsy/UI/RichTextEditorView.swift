@@ -904,10 +904,32 @@ class CustomTextView: NSTextView {
     }
 }
 
+enum EditorAIActionKind: Equatable {
+    case replaceSelection
+    case insertBelowSelection
+}
+
+struct EditorAIActionRequest: Equatable {
+    let id: UUID
+    let kind: EditorAIActionKind
+    let text: String
+    let targetRange: NSRange?
+
+    init(id: UUID = UUID(), kind: EditorAIActionKind, text: String, targetRange: NSRange? = nil) {
+        self.id = id
+        self.kind = kind
+        self.text = text
+        self.targetRange = targetRange
+    }
+}
+
 struct RichTextEditorView: NSViewRepresentable {
     var note: Note
     var store: NoteStore
     @Binding var editorState: EditorState
+    @Binding var selectedText: String
+    @Binding var selectedRange: NSRange?
+    @Binding var pendingAIAction: EditorAIActionRequest?
     var themeVariantRaw: String
 
     private var themeEditorTextColor: NSColor {
@@ -959,6 +981,7 @@ struct RichTextEditorView: NSViewRepresentable {
         textView.resetTypingAttributesForCurrentSelection()
         context.coordinator.lastAppliedEditorTextColor = themeEditorTextColor
         context.coordinator.currentNoteID = note.id
+        context.coordinator.updateSelectionText(for: textView)
 
         return scrollView
     }
@@ -992,7 +1015,16 @@ struct RichTextEditorView: NSViewRepresentable {
             }
 
             context.coordinator.updateFormattingState(for: textView)
+            context.coordinator.updateSelectionText(for: textView)
             context.coordinator.isUpdating = false
+        }
+
+        if let pendingAIAction, context.coordinator.lastHandledAIActionID != pendingAIAction.id {
+            context.coordinator.lastHandledAIActionID = pendingAIAction.id
+            context.coordinator.applyAIAction(pendingAIAction, to: textView)
+            DispatchQueue.main.async {
+                self.pendingAIAction = nil
+            }
         }
     }
 
@@ -1000,6 +1032,7 @@ struct RichTextEditorView: NSViewRepresentable {
         var parent: RichTextEditorView
         var currentNoteID: UUID?
         var isUpdating = false
+        var lastHandledAIActionID: UUID?
         weak var textView: NSTextView?
         var lastAppliedEditorTextColor: NSColor = Theme.editorTextNSColor
         private var findQuery: String = ""
@@ -1355,10 +1388,135 @@ struct RichTextEditorView: NSViewRepresentable {
             }
             saveState()
         }
+
+        func applyAIAction(_ action: EditorAIActionRequest, to textView: NSTextView) {
+            textView.window?.makeFirstResponder(textView)
+            switch action.kind {
+            case .replaceSelection:
+                replaceSelection(in: textView, with: action.text, preferredRange: action.targetRange)
+            case .insertBelowSelection:
+                insertBelowSelection(in: textView, value: action.text, preferredRange: action.targetRange)
+            }
+            saveState()
+            updateSelectionText(for: textView)
+        }
+
+        func updateSelectionText(for textView: NSTextView) {
+            let selected = textView.selectedRange()
+            let nsText = textView.string as NSString
+            let selectedString: String
+
+            if selected.length > 0, selected.location + selected.length <= nsText.length {
+                selectedString = nsText.substring(with: selected)
+            } else {
+                selectedString = ""
+            }
+
+            DispatchQueue.main.async {
+                if self.parent.selectedText != selectedString {
+                    self.parent.selectedText = selectedString
+                }
+                if self.parent.selectedRange != selected {
+                    self.parent.selectedRange = selected
+                }
+            }
+        }
+
+        private func replaceSelection(in textView: NSTextView, with value: String, preferredRange: NSRange?) {
+            let fallback = textView.selectedRange()
+            let selection: NSRange
+            if let preferredRange,
+               preferredRange.location != NSNotFound,
+               preferredRange.length > 0,
+               preferredRange.location + preferredRange.length <= (textView.string as NSString).length {
+                selection = preferredRange
+            } else {
+                selection = fallback
+            }
+            guard selection.length > 0 else { return }
+            let attributed = attributedText(from: value, textView: textView)
+            applyTextEdit(in: textView, range: selection, replacement: attributed)
+            let cursor = selection.location + attributed.length
+            textView.setSelectedRange(NSRange(location: cursor, length: 0))
+            if let customTextView = textView as? CustomTextView {
+                customTextView.resetTypingAttributesForCurrentSelection()
+            }
+        }
+
+        private func insertBelowSelection(in textView: NSTextView, value: String, preferredRange: NSRange?) {
+            let nsText = textView.string as NSString
+            let fallback = textView.selectedRange()
+            let selection: NSRange
+            if let preferredRange,
+               preferredRange.location != NSNotFound,
+               preferredRange.location + preferredRange.length <= nsText.length {
+                selection = preferredRange
+            } else {
+                selection = fallback
+            }
+            let baseLocation = selection.length > 0 ? selection.location + selection.length : selection.location
+            let safeProbe = max(0, min(baseLocation, max(0, nsText.length - 1)))
+            let lineRange = nsText.length == 0
+                ? NSRange(location: 0, length: 0)
+                : nsText.lineRange(for: NSRange(location: safeProbe, length: 0))
+            let insertionLocation = nsText.length == 0 ? 0 : lineRange.location + lineRange.length
+
+            var insertionText = value.trimmingCharacters(in: .newlines)
+            if !insertionText.isEmpty, insertionLocation > 0 {
+                let previous = nsText.substring(with: NSRange(location: insertionLocation - 1, length: 1))
+                if previous != "\n" {
+                    insertionText = "\n" + insertionText
+                }
+            }
+
+            let attributed = attributedText(from: insertionText, textView: textView)
+            applyTextEdit(
+                in: textView,
+                range: NSRange(location: insertionLocation, length: 0),
+                replacement: attributed
+            )
+            textView.setSelectedRange(NSRange(location: insertionLocation + attributed.length, length: 0))
+            if let customTextView = textView as? CustomTextView {
+                customTextView.resetTypingAttributesForCurrentSelection()
+            }
+        }
+
+        private func applyTextEdit(
+            in textView: NSTextView,
+            range: NSRange,
+            replacement: NSAttributedString
+        ) {
+            guard let textStorage = textView.textStorage else { return }
+            if let customTextView = textView as? CustomTextView {
+                customTextView.registerPendingEdit(
+                    affectedRange: range,
+                    replacementString: replacement.string
+                )
+            }
+            guard textView.shouldChangeText(in: range, replacementString: replacement.string) else {
+                return
+            }
+            textStorage.replaceCharacters(in: range, with: replacement)
+            textView.didChangeText()
+        }
+
+        private func attributedText(from value: String, textView: NSTextView) -> NSAttributedString {
+            let attrs = (textView.typingAttributes[.font] as? NSFont) == nil
+                ? [
+                    NSAttributedString.Key.font: NSFont.monospacedSystemFont(
+                        ofSize: CustomTextView.editorFontSize,
+                        weight: .regular
+                    ),
+                    NSAttributedString.Key.foregroundColor: Theme.editorTextNSColor
+                ]
+                : textView.typingAttributes
+            return NSAttributedString(string: value, attributes: attrs)
+        }
         
         func saveState() {
             guard let textView = self.textView else { return }
             updateFormattingState(for: textView)
+            updateSelectionText(for: textView)
             parent.note.update(with: textView.attributedString())
             parent.store.saveNoteChanges(noteID: parent.note.id)
         }
@@ -1433,6 +1591,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
             }
             parent.note.update(with: textView.attributedString())
+            updateSelectionText(for: textView)
             if !findQuery.isEmpty {
                 updateFindQuery(findQuery)
             }
@@ -1494,6 +1653,7 @@ struct RichTextEditorView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             updateFormattingState(for: textView)
+            updateSelectionText(for: textView)
         }
         
         func updateFormattingState(for textView: NSTextView) {
