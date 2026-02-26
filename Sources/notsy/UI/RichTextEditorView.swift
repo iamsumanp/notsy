@@ -69,9 +69,22 @@ class CustomTextView: NSTextView {
     }
 
 
-    private func normalizedTypingAttributes(base: [NSAttributedString.Key: Any]? = nil) -> [NSAttributedString.Key: Any] {
+    private func normalizedTypingAttributes(
+        base: [NSAttributedString.Key: Any]? = nil,
+        forceDefaultColor: Bool = false
+    ) -> [NSAttributedString.Key: Any] {
         var attrs = base ?? typingAttributes
-        attrs[.foregroundColor] = Theme.editorTextNSColor
+        // Never keep a link attribute in typing attrs; otherwise new typed text can inherit link style.
+        attrs.removeValue(forKey: .link)
+        if forceDefaultColor {
+            attrs[.foregroundColor] = Theme.editorTextNSColor
+        } else if let color = attrs[.foregroundColor] as? NSColor {
+            attrs[.foregroundColor] = areColorsEquivalent(color, .systemGreen)
+                ? Theme.editorTextNSColor
+                : color
+        } else {
+            attrs[.foregroundColor] = Theme.editorTextNSColor
+        }
         if attrs[.font] == nil {
             attrs[.font] = NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
         }
@@ -160,16 +173,23 @@ class CustomTextView: NSTextView {
 
     func resetTypingAttributesForCurrentSelection() {
         guard let textStorage else {
-            typingAttributes = normalizedTypingAttributes()
+            typingAttributes = normalizedTypingAttributes(forceDefaultColor: true)
             return
         }
 
         guard textStorage.length > 0 else {
-            typingAttributes = normalizedTypingAttributes()
+            typingAttributes = normalizedTypingAttributes(forceDefaultColor: true)
             return
         }
 
-        let cursor = max(0, min(selectedRange().location, textStorage.length - 1))
+        let selection = selectedRange()
+        let probeLocation: Int
+        if selection.location > 0 {
+            probeLocation = selection.location - 1
+        } else {
+            probeLocation = selection.location
+        }
+        let cursor = max(0, min(probeLocation, textStorage.length - 1))
         let attrs = textStorage.attributes(at: cursor, effectiveRange: nil)
         typingAttributes = normalizedTypingAttributes(base: attrs)
     }
@@ -193,7 +213,13 @@ class CustomTextView: NSTextView {
                 textStorage.addAttribute(.foregroundColor, value: newColor, range: range)
             }
         }
-        typingAttributes[.foregroundColor] = newColor
+        if let typingColor = typingAttributes[.foregroundColor] as? NSColor {
+            if shouldAutoThemeRecolor(current: typingColor, oldThemeColor: oldColor) {
+                typingAttributes[.foregroundColor] = newColor
+            }
+        } else {
+            typingAttributes[.foregroundColor] = newColor
+        }
         insertionPointColor = newColor
     }
 
@@ -878,8 +904,15 @@ class CustomTextView: NSTextView {
         let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
         let trimmed = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
 
-        guard let currentBullet = Self.bulletMarkerPrefix(in: trimmed) else { return }
-        let expectedBullet = Self.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+        let currentBullet: String
+        if let dotBullet = Self.bulletMarkerPrefix(in: trimmed) {
+            currentBullet = dotBullet
+        } else if trimmed.hasPrefix("- ") {
+            currentBullet = "- "
+        } else {
+            return
+        }
+        let expectedBullet = leadingWhitespace.isEmpty ? "- " : Self.bulletMarker(forLeadingWhitespace: leadingWhitespace)
         guard currentBullet != expectedBullet else { return }
 
         let markerLocation = lineRange.location + leadingWhitespace.utf16.count
@@ -927,10 +960,12 @@ struct RichTextEditorView: NSViewRepresentable {
     var note: Note
     var store: NoteStore
     @Binding var editorState: EditorState
+    @Binding var activeEditorColor: NSColor
     @Binding var selectedText: String
     @Binding var selectedRange: NSRange?
     @Binding var pendingAIAction: EditorAIActionRequest?
     var themeVariantRaw: String
+    var spellCheckEnabled: Bool
 
     private var themeEditorTextColor: NSColor {
         Theme.palette(for: NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish).editorText
@@ -951,11 +986,14 @@ struct RichTextEditorView: NSViewRepresentable {
         textView.allowsUndo = true
         textView.isRichText = true
         textView.importsGraphics = true
-        textView.isContinuousSpellCheckingEnabled = true
+        textView.isContinuousSpellCheckingEnabled = spellCheckEnabled
         textView.insertionPointColor = themeEditorTextColor
         textView.drawsBackground = false
         textView.usesFontPanel = true
         textView.usesRuler = true
+        textView.selectedTextAttributes = [
+            .backgroundColor: NSColor.selectedTextBackgroundColor.withAlphaComponent(0.45)
+        ]
 
         let defaultStyle = NSMutableParagraphStyle()
         defaultStyle.lineSpacing = 4
@@ -995,6 +1033,9 @@ struct RichTextEditorView: NSViewRepresentable {
             let newThemeTextColor = themeEditorTextColor
             customTextView.applyThemeTextColorTransition(from: context.coordinator.lastAppliedEditorTextColor, to: newThemeTextColor)
             context.coordinator.lastAppliedEditorTextColor = newThemeTextColor
+        }
+        if textView.isContinuousSpellCheckingEnabled != spellCheckEnabled {
+            textView.isContinuousSpellCheckingEnabled = spellCheckEnabled
         }
 
         if context.coordinator.currentNoteID != note.id {
@@ -1060,28 +1101,11 @@ struct RichTextEditorView: NSViewRepresentable {
             textView.window?.makeFirstResponder(textView)
             
             if action == "bold" {
-                let sender = NSMenuItem()
-                if self.parent.editorState.isBold {
-                    sender.tag = Int(NSFontTraitMask.unboldFontMask.rawValue)
-                    NSFontManager.shared.addFontTrait(sender)
-                } else {
-                    sender.tag = Int(NSFontTraitMask.boldFontMask.rawValue)
-                    NSFontManager.shared.addFontTrait(sender)
-                }
-                saveState()
+                toggleBold()
             } else if action == "italic" {
-                let sender = NSMenuItem()
-                if self.parent.editorState.isItalic {
-                    sender.tag = Int(NSFontTraitMask.unitalicFontMask.rawValue)
-                    NSFontManager.shared.addFontTrait(sender)
-                } else {
-                    sender.tag = Int(NSFontTraitMask.italicFontMask.rawValue)
-                    NSFontManager.shared.addFontTrait(sender)
-                }
-                saveState()
+                toggleItalic()
             } else if action == "underline" {
-                textView.underline(nil)
-                saveState()
+                toggleUnderline()
             } else if action == "strikethrough" {
                 toggleStrikethrough()
             } else if action == "list" {
@@ -1227,9 +1251,12 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func applyTextColor(_ color: NSColor) {
             guard let textView = self.textView else { return }
-            let selected = textView.selectedRange()
-            if selected.length > 0 {
-                textView.textStorage?.addAttribute(.foregroundColor, value: color, range: selected)
+            let ranges = selectedTextRanges(in: textView)
+            if !ranges.isEmpty {
+                for range in ranges {
+                    textView.textStorage?.addAttribute(.foregroundColor, value: color, range: range)
+                    textView.layoutManager?.invalidateDisplay(forCharacterRange: range)
+                }
             }
             textView.typingAttributes[.foregroundColor] = color
             saveState()
@@ -1314,12 +1341,15 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func toggleStrikethrough() {
             guard let textView = self.textView else { return }
-            let selected = textView.selectedRange()
-            let current = (textView.typingAttributes[.strikethroughStyle] as? Int ?? 0) > 0
-            let newValue = current ? 0 : NSUnderlineStyle.single.rawValue
+            let ranges = selectedTextRanges(in: textView)
+            let newValue = parent.editorState.isStrikethrough
+                ? 0
+                : NSUnderlineStyle.single.rawValue
 
-            if selected.length > 0 {
-                textView.textStorage?.addAttribute(.strikethroughStyle, value: newValue, range: selected)
+            if !ranges.isEmpty {
+                for range in ranges {
+                    textView.textStorage?.addAttribute(.strikethroughStyle, value: newValue, range: range)
+                }
             }
             textView.typingAttributes[.strikethroughStyle] = newValue
             saveState()
@@ -1327,12 +1357,14 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func applyFontStyle(_ style: EditorFontStyle) {
             guard let textView = self.textView else { return }
-            let selected = textView.selectedRange()
+            let ranges = selectedTextRanges(in: textView)
 
-            if selected.length > 0, let textStorage = textView.textStorage {
-                textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
-                    let current = (value as? NSFont) ?? (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                    textStorage.addAttribute(.font, value: self.font(for: style, basedOn: current), range: range)
+            if !ranges.isEmpty, let textStorage = textView.textStorage {
+                for selected in ranges {
+                    textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                        let current = (value as? NSFont) ?? (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                        textStorage.addAttribute(.font, value: self.font(for: style, basedOn: current), range: range)
+                    }
                 }
             } else {
                 let current = (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
@@ -1366,7 +1398,7 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func applyFontSize(delta: CGFloat? = nil, defaultSize: CGFloat? = nil) {
             guard let textView = self.textView else { return }
-            let selected = textView.selectedRange()
+            let ranges = selectedTextRanges(in: textView)
 
             func resized(_ font: NSFont) -> NSFont {
                 let currentSize = font.pointSize
@@ -1374,12 +1406,14 @@ struct RichTextEditorView: NSViewRepresentable {
                 return NSFont(descriptor: font.fontDescriptor, size: target) ?? font
             }
 
-            if selected.length > 0, let textStorage = textView.textStorage {
-                textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
-                    let current = (value as? NSFont)
-                        ?? (textView.typingAttributes[.font] as? NSFont)
-                        ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                    textStorage.addAttribute(.font, value: resized(current), range: range)
+            if !ranges.isEmpty, let textStorage = textView.textStorage {
+                for selected in ranges {
+                    textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                        let current = (value as? NSFont)
+                            ?? (textView.typingAttributes[.font] as? NSFont)
+                            ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                        textStorage.addAttribute(.font, value: resized(current), range: range)
+                    }
                 }
             } else {
                 let current = (textView.typingAttributes[.font] as? NSFont)
@@ -1387,6 +1421,82 @@ struct RichTextEditorView: NSViewRepresentable {
                 textView.typingAttributes[.font] = resized(current)
             }
             saveState()
+        }
+
+        private func toggleBold() {
+            toggleFontTrait(.boldFontMask, enable: !parent.editorState.isBold)
+        }
+
+        private func toggleItalic() {
+            toggleFontTrait(.italicFontMask, enable: !parent.editorState.isItalic)
+        }
+
+        private func toggleUnderline() {
+            guard let textView = self.textView else { return }
+            let ranges = selectedTextRanges(in: textView)
+            let newValue = parent.editorState.isUnderline ? 0 : NSUnderlineStyle.single.rawValue
+
+            if !ranges.isEmpty {
+                for range in ranges {
+                    textView.textStorage?.addAttribute(.underlineStyle, value: newValue, range: range)
+                }
+            }
+            textView.typingAttributes[.underlineStyle] = newValue
+            saveState()
+        }
+
+        private func toggleFontTrait(_ trait: NSFontTraitMask, enable: Bool) {
+            guard let textView = self.textView else { return }
+            let ranges = selectedTextRanges(in: textView)
+            let fontManager = NSFontManager.shared
+
+            if !ranges.isEmpty, let textStorage = textView.textStorage {
+                for selected in ranges {
+                    textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                        let current = (value as? NSFont)
+                            ?? (textView.typingAttributes[.font] as? NSFont)
+                            ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                        let updated = enable
+                            ? (fontManager.convert(current, toHaveTrait: trait) as NSFont? ?? current)
+                            : (fontManager.convert(current, toNotHaveTrait: trait) as NSFont? ?? current)
+                        textStorage.addAttribute(.font, value: updated, range: range)
+                    }
+                }
+            } else {
+                let current = (textView.typingAttributes[.font] as? NSFont)
+                    ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                let updated = enable
+                    ? (fontManager.convert(current, toHaveTrait: trait) as NSFont? ?? current)
+                    : (fontManager.convert(current, toNotHaveTrait: trait) as NSFont? ?? current)
+                textView.typingAttributes[.font] = updated
+            }
+
+            saveState()
+        }
+
+        private func selectedTextRanges(in textView: NSTextView) -> [NSRange] {
+            let nsText = textView.string as NSString
+            let totalLength = nsText.length
+            var ranges = textView.selectedRanges.map(\.rangeValue)
+            ranges = ranges.filter { range in
+                range.location != NSNotFound
+                    && range.location <= totalLength
+                    && range.location + range.length <= totalLength
+                    && range.length > 0
+            }
+
+            if ranges.isEmpty {
+                let selected = textView.selectedRange()
+                if selected.location != NSNotFound,
+                    selected.location <= totalLength,
+                    selected.location + selected.length <= totalLength,
+                    selected.length > 0
+                {
+                    ranges = [selected]
+                }
+            }
+
+            return ranges.sorted { $0.location < $1.location }
         }
 
         func applyAIAction(_ action: EditorAIActionRequest, to textView: NSTextView) {
@@ -1564,6 +1674,8 @@ struct RichTextEditorView: NSViewRepresentable {
                 } else {
                     if let bullet = existingBullet {
                         textView.insertText("", replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bullet.utf16.count))
+                    } else if trimmed.hasPrefix("- ") {
+                        textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 2))
                     } else if trimmed.hasPrefix(checkStr) {
                         textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkStr.utf16.count))
                     } else if trimmed.hasPrefix(checkedStr) {
@@ -1590,6 +1702,7 @@ struct RichTextEditorView: NSViewRepresentable {
             if let fgColor = textView.typingAttributes[.foregroundColor] as? NSColor, fgColor == NSColor.systemGreen {
                 textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
             }
+            updateFormattingState(for: textView)
             parent.note.update(with: textView.attributedString())
             updateSelectionText(for: textView)
             if !findQuery.isEmpty {
@@ -1652,6 +1765,9 @@ struct RichTextEditorView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            if let customTextView = textView as? CustomTextView, textView.selectedRange().length == 0 {
+                customTextView.resetTypingAttributesForCurrentSelection()
+            }
             updateFormattingState(for: textView)
             updateSelectionText(for: textView)
         }
@@ -1706,6 +1822,13 @@ struct RichTextEditorView: NSViewRepresentable {
                 if CustomTextView.bulletMarkerPrefix(in: trimmed) != nil { isBullet = true }
                 else if trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") { isCheckbox = true }
             }
+
+            let activeColor: NSColor = {
+                if let color = attrs[.foregroundColor] as? NSColor, color != NSColor.systemGreen {
+                    return color
+                }
+                return Theme.editorTextNSColor
+            }()
             
             DispatchQueue.main.async {
                 let hasSelection = textView.selectedRange().length > 0
@@ -1722,6 +1845,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 if self.parent.editorState != newState {
                     self.parent.editorState = newState
                 }
+                self.parent.activeEditorColor = activeColor
             }
         }
 
@@ -1742,7 +1866,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 if chars.count >= markerColumn + 2 {
                     let marker = chars[markerColumn]
                     let markerSpacer = chars[markerColumn + 1]
-                    let isListMarker = (marker == "•" || marker == "○" || marker == "◉") && markerSpacer == " "
+                    let isListMarker = (marker == "•" || marker == "-" || marker == "○" || marker == "◉") && markerSpacer == " "
                     if isListMarker {
                         let markerStart = lineRange.location + leadingWhitespace.utf16.count
                         let markerEnd = markerStart + 2
@@ -1755,22 +1879,20 @@ struct RichTextEditorView: NSViewRepresentable {
                 }
             }
 
-            // Intercept Markdown "- " at start/indent and convert into a bullet synchronously.
+            // Keep "- " at top-level, but convert nested "- " to dot bullets for that level.
             if replacement == " " {
                 let text = textView.string as NSString
                 let lineRange = text.lineRange(for: NSRange(location: affectedCharRange.location, length: 0))
                 let beforeCursorLength = max(0, affectedCharRange.location - lineRange.location)
                 let beforeCursor = text.substring(with: NSRange(location: lineRange.location, length: beforeCursorLength))
 
-                // Robust match: line prefix must be only indentation + a single trailing "-"
                 if let dashIndex = beforeCursor.lastIndex(of: "-") {
                     let prefixBeforeDash = String(beforeCursor[..<dashIndex])
                     let suffixAfterDash = String(beforeCursor[beforeCursor.index(after: dashIndex)...])
                     let isListDashPattern = suffixAfterDash.isEmpty && prefixBeforeDash.allSatisfy { $0 == " " || $0 == "\t" }
 
-                    if isListDashPattern {
-                        let leadingWhitespace = prefixBeforeDash
-                        let bulletForLevel = CustomTextView.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+                    if isListDashPattern, !prefixBeforeDash.isEmpty {
+                        let bulletForLevel = CustomTextView.bulletMarker(forLeadingWhitespace: prefixBeforeDash)
                         let dashLocation = lineRange.location + prefixBeforeDash.utf16.count
                         textView.undoManager?.beginUndoGrouping()
                         textView.insertText(bulletForLevel, replacementRange: NSRange(location: dashLocation, length: 1))
@@ -1780,6 +1902,7 @@ struct RichTextEditorView: NSViewRepresentable {
                     }
                 }
             }
+
             return true
         }
 
@@ -1815,6 +1938,11 @@ struct RichTextEditorView: NSViewRepresentable {
             var prefixToContinue = ""
             if let bullet = CustomTextView.bulletMarkerPrefix(in: trimmedLine) { prefixToContinue = bullet }
             else if trimmedLine.hasPrefix("○ ") || trimmedLine.hasPrefix("◉ ") { prefixToContinue = "○ " }
+            else if trimmedLine.hasPrefix("- ") {
+                prefixToContinue = leadingWhitespace.isEmpty
+                    ? "- "
+                    : CustomTextView.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+            }
             
             if !prefixToContinue.isEmpty {
                 let textAfterPrefix = trimmedLine.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1834,6 +1962,7 @@ struct RichTextEditorView: NSViewRepresentable {
                         textView.insertText("", replacementRange: fullLineRange)
                         textView.insertText("\n", replacementRange: textView.selectedRange())
                     }
+                    textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
                     
                     textView.undoManager?.endUndoGrouping()
                     saveState()
@@ -1841,13 +1970,21 @@ struct RichTextEditorView: NSViewRepresentable {
                 } else {
                     // Continue the list automatically on the next line, preserving indent
                     textView.undoManager?.beginUndoGrouping()
-                    textView.insertText("\n" + leadingWhitespace + prefixToContinue, replacementRange: textView.selectedRange())
+                    let insertedPrefix = "\n" + leadingWhitespace + prefixToContinue
+                    let insertionStart = textView.selectedRange().location
+                    textView.insertText(insertedPrefix, replacementRange: textView.selectedRange())
+                    textView.textStorage?.addAttribute(
+                        .foregroundColor,
+                        value: Theme.editorTextNSColor,
+                        range: NSRange(location: insertionStart, length: insertedPrefix.utf16.count)
+                    )
                     
                     // If it's a green checked dot we need to make sure the newly inserted one is white
                     let newCursor = textView.selectedRange()
                     if prefixToContinue == "○ " {
                         textView.textStorage?.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: newCursor.location - 2, length: 1))
                     }
+                    textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
                     
                     textView.undoManager?.endUndoGrouping()
                     saveState()
@@ -1855,7 +1992,12 @@ struct RichTextEditorView: NSViewRepresentable {
                 }
             }
             
-            return false
+            textView.undoManager?.beginUndoGrouping()
+            textView.insertText("\n", replacementRange: textView.selectedRange())
+            textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
+            textView.undoManager?.endUndoGrouping()
+            saveState()
+            return true
         }
 
         private func handleTab(_ textView: NSTextView) -> Bool {
@@ -1903,7 +2045,7 @@ struct RichTextEditorView: NSViewRepresentable {
             let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
             let trimmed = lineString.trimmingCharacters(in: .whitespaces)
             let isBullet = CustomTextView.bulletMarkerPrefix(in: trimmed) != nil
-            guard isBullet || trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") else { return false }
+            guard isBullet || trimmed.hasPrefix("- ") || trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") else { return false }
 
             let markerStart = lineRange.location + leadingWhitespace.utf16.count
             let contentStart = markerStart + 2

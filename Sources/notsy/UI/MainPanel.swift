@@ -85,6 +85,7 @@ struct MainPanel: View {
         .bluish.rawValue
     @AppStorage("notsy.sidebar.width") private var sidebarWidth: Double = 300
     @AppStorage("notsy.sidebar.collapsed") private var sidebarCollapsed: Bool = false
+    @AppStorage("notsy.editor.spellcheck.enabled") private var spellCheckEnabled: Bool = false
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var sidebarRuntimeWidth: CGFloat = 300
     @State private var sidebarResizeHovering = false
@@ -106,6 +107,7 @@ struct MainPanel: View {
     @State private var aiPopoverTrigger: AIPopoverTrigger?
     @State private var aiCustomPrompt = ""
     @AppStorage(AIWritingService.enabledDefaultsKey) private var aiEnabled: Bool = false
+    @AppStorage("notsy.last.selected.note.id") private var persistedSelectedNoteIDRaw: String = ""
 
     enum FocusField: Hashable {
         case search
@@ -165,6 +167,10 @@ struct MainPanel: View {
 
     private var mostRecentlyModifiedNoteID: UUID? {
         store.notes.max(by: { $0.updatedAt < $1.updatedAt })?.id
+    }
+
+    private var persistedSelectedNoteID: UUID? {
+        UUID(uuidString: persistedSelectedNoteIDRaw)
     }
 
     var body: some View {
@@ -279,7 +285,10 @@ struct MainPanel: View {
                                             }
                                             let base = sidebarDragStartWidth ?? clampedSidebarWidth
                                             let proposed = base + value.translation.width
-                                            sidebarRuntimeWidth = max(200, min(460, proposed))
+                                            sidebarRuntimeWidth = max(
+                                                sidebarMinWidth,
+                                                min(sidebarMaxWidth, proposed)
+                                            )
                                         }
                                         .onEnded { _ in
                                             sidebarWidth = Double(clampedSidebarWidth)
@@ -369,9 +378,11 @@ struct MainPanel: View {
                             note: note,
                             store: store,
                             editorState: $editorState,
+                            activeEditorColor: $activeEditorColor,
                             selectedText: $selectedEditorText,
                             selectedRange: $selectedEditorRange,
                             pendingAIAction: $pendingEditorAIAction,
+                            spellCheckEnabled: spellCheckEnabled,
                             isFocused: _focus
                         )
                         .padding(.leading, editorUsesCompactSidebarSpacing ? 40 : 18)
@@ -639,8 +650,10 @@ struct MainPanel: View {
             store.sortNotes()
             queryBuffer = ""
             refreshSidebarPreviewCache()
-            if let mostRecentID = mostRecentlyModifiedNoteID {
-                selectedNoteID = mostRecentID
+            if let restoredID = resolvedSelectionForOpen() {
+                if selectedNoteID != restoredID {
+                    selectedNoteID = restoredID
+                }
                 focusEditorWhenAvailable()
             } else {
                 focus = .search
@@ -663,6 +676,7 @@ struct MainPanel: View {
             }
         }
         .onChange(of: selectedNoteID) { _, _ in
+            persistSelectedSelection()
             refreshSidebarPreviewCache()
             resetAIOverlay(clearSelection: true)
             if showEditorFind {
@@ -697,15 +711,13 @@ struct MainPanel: View {
                     handleKeyDown(event)
                 }
             }
-            if selectedNoteID == nil, let mostRecentID = mostRecentlyModifiedNoteID {
-                selectedNoteID = mostRecentID
+            if let restoredID = resolvedSelectionForOpen() {
+                if selectedNoteID != restoredID {
+                    selectedNoteID = restoredID
+                }
                 focusEditorWhenAvailable()
             } else {
-                if selectedNoteID != nil {
-                    focusEditorWhenAvailable()
-                } else {
-                    focus = .search
-                }
+                focus = .search
             }
         }
         .onDisappear {
@@ -979,8 +991,12 @@ struct MainPanel: View {
     }
 
     private var clampedSidebarWidth: CGFloat {
-        max(200, min(460, sidebarRuntimeWidth))
+        max(sidebarMinWidth, min(sidebarMaxWidth, sidebarRuntimeWidth))
     }
+
+    private var sidebarMinWidth: CGFloat { 140 }
+
+    private var sidebarMaxWidth: CGFloat { 460 }
 
     private var hasCurrentSelection: Bool {
         let trimmed = selectedEditorText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1000,6 +1016,22 @@ struct MainPanel: View {
                 focus = .editor
             }
         }
+    }
+
+    private func resolvedSelectionForOpen() -> UUID? {
+        if let selectedNoteID, store.notes.contains(where: { $0.id == selectedNoteID }) {
+            return selectedNoteID
+        }
+        if let persistedSelectedNoteID,
+            store.notes.contains(where: { $0.id == persistedSelectedNoteID })
+        {
+            return persistedSelectedNoteID
+        }
+        return mostRecentlyModifiedNoteID
+    }
+
+    private func persistSelectedSelection() {
+        persistedSelectedNoteIDRaw = selectedNoteID?.uuidString ?? ""
     }
 
     private var aiPanelState: AIPanelState {
@@ -1731,6 +1763,28 @@ struct MainPanel: View {
                 .buttonStyle(PointerPlainButtonStyle())
                 .help("Insert or edit link")
 
+                Button(action: { spellCheckEnabled.toggle() }) {
+                    ZStack(alignment: .bottomTrailing) {
+                        Image(systemName: "textformat.abc.dottedunderline")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 22, height: 22)
+                            .background(
+                                spellCheckEnabled ? Theme.selection.opacity(0.32) : Color.clear
+                            )
+                            .cornerRadius(4)
+
+                        if spellCheckEnabled {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.green.opacity(0.95))
+                                .background(Theme.bg, in: Circle())
+                                .offset(x: 2, y: 2)
+                        }
+                    }
+                }
+                .buttonStyle(PointerPlainButtonStyle())
+                .help(spellCheckEnabled ? "Disable spell check" : "Enable spell check")
+
                 aiAssistantChipGroup(note: note)
             }
         }
@@ -1797,20 +1851,24 @@ struct SidebarView: View {
     @Environment(NoteStore.self) private var store
     @State private var draggedNoteID: UUID?
     @State private var hoveredNoteID: UUID?
+    @State private var hoveredSectionID: String?
     @State private var dragOverPinnedSection = false
     @State private var dragOverRecentSection = false
     @State private var dropTargetNoteID: UUID?
+    @AppStorage("notsy.sidebar.section.pinned.collapsed") private var pinnedCollapsed = false
+    @AppStorage("notsy.sidebar.section.today.collapsed") private var todayCollapsed = false
+    @AppStorage("notsy.sidebar.section.yesterday.collapsed") private var yesterdayCollapsed = false
+    @AppStorage("notsy.sidebar.section.recent.collapsed") private var recentCollapsed = true
+    @AppStorage("notsy.sidebar.section.older.collapsed") private var olderCollapsed = true
+    @State private var autoExpandedPreviousStates: [String: Bool] = [:]
     private let dragTypeIdentifier = UTType.plainText.identifier
-    private let sidebarDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d, yyyy"
-        return formatter
-    }()
+    private let collapseAnimation = Animation.easeOut(duration: 0.14)
 
-    private struct RecentGroup: Identifiable {
-        let id: String
-        let title: String
-        let notes: [Note]
+    private struct TimeBuckets {
+        var today: [Note] = []
+        var yesterday: [Note] = []
+        var recent: [Note] = []
+        var older: [Note] = []
     }
 
     var body: some View {
@@ -1820,54 +1878,116 @@ struct SidebarView: View {
             (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
         let displayPinned = pinned.filter { $0.id != topHitID }
         let displayRecent = recent.filter { $0.id != topHitID }
+        let buckets = timeBuckets(from: displayRecent)
 
         VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    if !queryBuffer.isEmpty, let firstNote = filteredNotes.first {
-                        topHitRow(note: firstNote)
-                    }
-
-                    if !displayPinned.isEmpty || draggedNoteID != nil {
-                        pinnedSection(notes: displayPinned)
-                    }
-
-                    if !displayRecent.isEmpty || draggedNoteID != nil {
-                        recentSection(notes: displayRecent)
-                    }
-
-                    Text("ACTIONS")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(Theme.textMuted)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 24)
-                        .padding(.bottom, 4)
-
-                    Button(action: createNewNote) {
-                        HStack(spacing: 10) {
-                            ZRectangleIcon(icon: "plus", isSelected: false)
-                            Text(
-                                queryBuffer.isEmpty
-                                    ? "Create New Note" : "Create \"\(queryBuffer)\""
-                            )
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(Theme.text)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            Spacer()
-                            Text("Cmd+N")
-                                .font(.system(size: 8))
-                                .foregroundColor(Theme.textMuted)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        if !queryBuffer.isEmpty, let firstNote = filteredNotes.first {
+                            topHitRow(note: firstNote)
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 2)
-                        .background(Color.clear)
-                        .contentShape(Rectangle())
+
+                        if !displayPinned.isEmpty || draggedNoteID != nil {
+                            sectionBlock(
+                                id: "pinned",
+                                title: "PINNED",
+                                notes: displayPinned,
+                                isCollapsed: $pinnedCollapsed,
+                                destinationPinned: true
+                            )
+                        }
+
+                        if !buckets.today.isEmpty {
+                            sectionBlock(
+                                id: "today",
+                                title: "TODAY",
+                                notes: buckets.today,
+                                isCollapsed: $todayCollapsed,
+                                destinationPinned: false
+                            )
+                        }
+
+                        if !buckets.yesterday.isEmpty {
+                            sectionBlock(
+                                id: "yesterday",
+                                title: "YESTERDAY",
+                                notes: buckets.yesterday,
+                                isCollapsed: $yesterdayCollapsed,
+                                destinationPinned: false
+                            )
+                        }
+
+                        if !buckets.recent.isEmpty {
+                            sectionBlock(
+                                id: "recent",
+                                title: "RECENT",
+                                notes: buckets.recent,
+                                isCollapsed: $recentCollapsed,
+                                destinationPinned: false
+                            )
+                        }
+
+                        if !buckets.older.isEmpty {
+                            sectionBlock(
+                                id: "older",
+                                title: "OLDER / ARCHIVE",
+                                notes: buckets.older,
+                                isCollapsed: $olderCollapsed,
+                                destinationPinned: false
+                            )
+                        }
+
+                        Text("ACTIONS")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(Theme.textMuted)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 24)
+                            .padding(.bottom, 4)
+
+                        Button(action: createNewNote) {
+                            HStack(spacing: 10) {
+                                ZRectangleIcon(icon: "plus", isSelected: false)
+                                Text(
+                                    queryBuffer.isEmpty
+                                        ? "Create New Note" : "Create \"\(queryBuffer)\""
+                                )
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(Theme.text)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                Spacer()
+                                Text("Cmd+N")
+                                    .font(.system(size: 8))
+                                    .foregroundColor(Theme.textMuted)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 2)
+                            .background(Color.clear)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 4)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 4)
+                    .padding(.bottom, 16)
                 }
-                .padding(.bottom, 16)
+                .onAppear {
+                    expandSectionForSelection()
+                    scrollSelectionIntoView(using: proxy, animated: false)
+                }
+                .onChange(of: selectedNoteID) { _, _ in
+                    expandSectionForSelection()
+                    scrollSelectionIntoView(using: proxy, animated: false)
+                }
+                .onChange(of: filteredNotes.map(\.id)) { _, _ in
+                    expandSectionForSelection()
+                    scrollSelectionIntoView(using: proxy, animated: false)
+                }
+                .onChange(of: draggedNoteID) { _, newValue in
+                    if newValue == nil {
+                        restoreAutoExpandedSections()
+                    }
+                }
             }
             .focused($focus, equals: .list)
         }
@@ -1888,6 +2008,7 @@ struct SidebarView: View {
             contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
             showsPinBadge: note.pinned
         )
+        .id(note.id)
         .onDrag {
             makeDragProvider(for: note)
         }
@@ -1897,143 +2018,188 @@ struct SidebarView: View {
         }
     }
 
-    @ViewBuilder
-    private func pinnedSection(notes: [Note]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("PINNED")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(Theme.textMuted)
+    private func sectionBlock(
+        id: String,
+        title: String,
+        notes: [Note],
+        isCollapsed: Binding<Bool>,
+        destinationPinned: Bool
+    ) -> some View {
+        let selectedInSection = selectedNoteID.flatMap { selectedID in
+            notes.first(where: { $0.id == selectedID })
+        }
+        let visibleNotes: [Note]
+        if isCollapsed.wrappedValue, let selectedInSection {
+            visibleNotes = [selectedInSection]
+        } else if isCollapsed.wrappedValue {
+            visibleNotes = []
+        } else {
+            visibleNotes = notes
+        }
+
+        return VStack(alignment: .leading, spacing: 4) {
+            Button(action: {
+                autoExpandedPreviousStates.removeValue(forKey: id)
+                withAnimation(collapseAnimation) {
+                    isCollapsed.wrappedValue.toggle()
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Theme.textMuted)
+                    Spacer()
+                    Text(isCollapsed.wrappedValue ? "▸" : "▾")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.textMuted)
+                        .opacity(hoveredSectionID == id ? 1 : 0)
+                        .frame(width: 12, alignment: .trailing)
+                }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
                 .padding(.bottom, 4)
-
-            ForEach(notes) { note in
-                noteRow(note: note, destinationPinned: true)
+                .contentShape(Rectangle())
             }
-
-            if notes.isEmpty, draggedNoteID != nil {
-                Text("Drop to pin")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.textMuted.opacity(0.8))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        .background(dragOverPinnedSection ? Theme.selection.opacity(0.16) : Color.clear)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(
-                    dragOverPinnedSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
-        )
-        .cornerRadius(8)
-        .animation(.easeInOut(duration: 0.12), value: dragOverPinnedSection)
-        .onDrop(of: [dragTypeIdentifier], isTargeted: $dragOverPinnedSection) { providers in
-            handleDrop(providers: providers, toPinned: true)
-        }
-    }
-
-    @ViewBuilder
-    private func recentSection(notes: [Note]) -> some View {
-        let groups = groupedRecentNotes(notes)
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-                Text(group.title)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(Theme.textMuted)
-                    .padding(.horizontal, 16)
-                    .padding(.top, index == 0 ? 16 : 12)
-                    .padding(.bottom, 4)
-
-                ForEach(group.notes) { note in
-                    noteRow(note: note, destinationPinned: false)
+            .buttonStyle(.plain)
+            .onHover { isHovering in
+                if isHovering {
+                    hoveredSectionID = id
+                } else if hoveredSectionID == id {
+                    hoveredSectionID = nil
                 }
             }
 
-            if groups.isEmpty, draggedNoteID != nil {
-                Text("Drop to unpin")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.textMuted.opacity(0.8))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+            if !visibleNotes.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(visibleNotes) { note in
+                        noteRow(note: note, destinationPinned: destinationPinned)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
-        .background(dragOverRecentSection ? Theme.selection.opacity(0.16) : Color.clear)
+        .background(sectionDropHighlight(destinationPinned: destinationPinned))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(
-                    dragOverRecentSection ? Theme.selection.opacity(0.45) : .clear, lineWidth: 1)
+                    sectionDropBorder(destinationPinned: destinationPinned),
+                    lineWidth: 1
+                )
         )
         .cornerRadius(8)
-        .animation(.easeInOut(duration: 0.12), value: dragOverRecentSection)
-        .onDrop(of: [dragTypeIdentifier], isTargeted: $dragOverRecentSection) { providers in
-            handleDrop(providers: providers, toPinned: false)
+        .animation(collapseAnimation, value: isCollapsed.wrappedValue)
+        .onDrop(
+            of: [dragTypeIdentifier],
+            isTargeted: sectionDropTargetBinding(
+                sectionID: id,
+                isCollapsed: isCollapsed,
+                destinationPinned: destinationPinned
+            )
+        ) { providers in
+            handleDrop(providers: providers, toPinned: destinationPinned)
         }
     }
 
-    private func groupedRecentNotes(_ notes: [Note]) -> [RecentGroup] {
-        guard !notes.isEmpty else { return [] }
+    private func sectionDropTargetBinding(
+        sectionID: String,
+        isCollapsed: Binding<Bool>,
+        destinationPinned: Bool
+    ) -> Binding<Bool> {
+        Binding(
+            get: { destinationPinned ? dragOverPinnedSection : dragOverRecentSection },
+            set: { isTargeted in
+                if destinationPinned {
+                    dragOverPinnedSection = isTargeted
+                } else {
+                    dragOverRecentSection = isTargeted
+                }
+                if isTargeted, isCollapsed.wrappedValue {
+                    if autoExpandedPreviousStates[sectionID] == nil {
+                        autoExpandedPreviousStates[sectionID] = isCollapsed.wrappedValue
+                    }
+                    withAnimation(collapseAnimation) {
+                        isCollapsed.wrappedValue = false
+                    }
+                }
+            }
+        )
+    }
 
+    private func sectionDropHighlight(destinationPinned: Bool) -> Color {
+        let isActive = destinationPinned ? dragOverPinnedSection : dragOverRecentSection
+        return isActive ? Theme.selection.opacity(0.12) : .clear
+    }
+
+    private func sectionDropBorder(destinationPinned: Bool) -> Color {
+        let isActive = destinationPinned ? dragOverPinnedSection : dragOverRecentSection
+        return isActive ? Theme.selection.opacity(0.35) : .clear
+    }
+
+    private func timeBuckets(from notes: [Note]) -> TimeBuckets {
+        var buckets = TimeBuckets()
         let calendar = Calendar.current
         let startOfToday = calendar.startOfDay(for: Date())
-        var today: [Note] = []
-        var yesterday: [Note] = []
-        var last7Days: [Note] = []
-        var olderByDate: [Date: [Note]] = [:]
+        let yesterdayDate = calendar.date(byAdding: .day, value: -1, to: startOfToday)
 
         for note in notes.sorted(by: { $0.updatedAt > $1.updatedAt }) {
-            let day = calendar.startOfDay(for: note.updatedAt)
-            if calendar.isDate(day, inSameDayAs: startOfToday) {
-                today.append(note)
+            let noteDay = calendar.startOfDay(for: note.updatedAt)
+            if calendar.isDate(noteDay, inSameDayAs: startOfToday) {
+                buckets.today.append(note)
                 continue
             }
-            if let yesterdayDate = calendar.date(byAdding: .day, value: -1, to: startOfToday),
-                calendar.isDate(day, inSameDayAs: yesterdayDate)
+            if let yesterdayDate, calendar.isDate(noteDay, inSameDayAs: yesterdayDate) {
+                buckets.yesterday.append(note)
+                continue
+            }
+            if let daysAgo = calendar.dateComponents([.day], from: noteDay, to: startOfToday).day,
+                daysAgo > 1, daysAgo <= 7
             {
-                yesterday.append(note)
-                continue
-            }
-            if let daysAgo = calendar.dateComponents([.day], from: day, to: startOfToday).day,
-                daysAgo > 1,
-                daysAgo <= 7
-            {
-                last7Days.append(note)
-                continue
-            }
-            olderByDate[day, default: []].append(note)
-        }
-
-        var groups: [RecentGroup] = []
-        if !today.isEmpty {
-            groups.append(RecentGroup(id: "today", title: "TODAY", notes: today))
-        }
-        if !yesterday.isEmpty {
-            groups.append(RecentGroup(id: "yesterday", title: "YESTERDAY", notes: yesterday))
-        }
-        if !last7Days.isEmpty {
-            groups.append(RecentGroup(id: "last7", title: "LAST 7 DAYS", notes: last7Days))
-        }
-
-        for day in olderByDate.keys.sorted(by: >) {
-            let title = sidebarDateFormatter.string(from: day).uppercased()
-            let groupNotes = olderByDate[day] ?? []
-            if !groupNotes.isEmpty {
-                groups.append(
-                    RecentGroup(
-                        id: "day-\(day.timeIntervalSinceReferenceDate)",
-                        title: title,
-                        notes: groupNotes
-                    )
-                )
+                buckets.recent.append(note)
+            } else {
+                buckets.older.append(note)
             }
         }
+        return buckets
+    }
 
-        return groups
+    private func expandSectionForSelection() {
+        guard let selectedNoteID else { return }
+        let pinned = filteredNotes.filter { $0.pinned }
+        let unpinned = filteredNotes.filter { !$0.pinned }
+        let topHitID =
+            (!queryBuffer.isEmpty && !filteredNotes.isEmpty) ? filteredNotes.first?.id : nil
+        let buckets = timeBuckets(from: unpinned.filter { $0.id != topHitID })
+
+        if pinned.contains(where: { $0.id == selectedNoteID }) {
+            pinnedCollapsed = false
+        }
+        if buckets.today.contains(where: { $0.id == selectedNoteID }) {
+            todayCollapsed = false
+        }
+        if buckets.yesterday.contains(where: { $0.id == selectedNoteID }) {
+            yesterdayCollapsed = false
+        }
+        if buckets.recent.contains(where: { $0.id == selectedNoteID }) {
+            recentCollapsed = false
+        }
+        if buckets.older.contains(where: { $0.id == selectedNoteID }) {
+            olderCollapsed = false
+        }
+    }
+
+    private func restoreAutoExpandedSections() {
+        guard !autoExpandedPreviousStates.isEmpty else { return }
+        withAnimation(collapseAnimation) {
+            if let previous = autoExpandedPreviousStates["pinned"] { pinnedCollapsed = previous }
+            if let previous = autoExpandedPreviousStates["today"] { todayCollapsed = previous }
+            if let previous = autoExpandedPreviousStates["yesterday"] { yesterdayCollapsed = previous }
+            if let previous = autoExpandedPreviousStates["recent"] { recentCollapsed = previous }
+            if let previous = autoExpandedPreviousStates["older"] { olderCollapsed = previous }
+        }
+        autoExpandedPreviousStates.removeAll()
     }
 
     @ViewBuilder
@@ -2044,6 +2210,7 @@ struct SidebarView: View {
             contentPreviewText: contentPreviewCache[note.id] ?? note.plainTextCache,
             showsPinBadge: destinationPinned
         )
+        .id(note.id)
         .onDrag {
             makeDragProvider(for: note)
         }
@@ -2053,6 +2220,44 @@ struct SidebarView: View {
                 .frame(height: dropTargetNoteID == note.id ? 2 : 0)
                 .opacity(dropTargetNoteID == note.id ? 1 : 0)
                 .padding(.horizontal, 8)
+        }
+        .overlay(alignment: .trailing) {
+            if hoveredNoteID == note.id, draggedNoteID == nil {
+                Menu {
+                    Button(action: {
+                        selectedNoteID = note.id
+                        focus = .editor
+                    }) {
+                        Label("Open", systemImage: "arrow.up.forward.square")
+                    }
+                    Button(action: {
+                        withAnimation(.spring()) { store.togglePin(for: note) }
+                    }) {
+                        Label(destinationPinned ? "Unpin" : "Pin", systemImage: destinationPinned ? "pin.slash" : "pin")
+                    }
+                    Button(action: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+                    }) {
+                        Label("Copy Content", systemImage: "doc.on.doc")
+                    }
+                    Button(role: .destructive, action: {
+                        withAnimation { deleteNote(note) }
+                    }) {
+                        Label("Delete", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 18, height: 18)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More")
+                .padding(.trailing, 12)
+                .transition(.opacity)
+            }
         }
         .onDrop(of: [dragTypeIdentifier], isTargeted: dropTargetBinding(for: note.id)) {
             providers in
@@ -2091,18 +2296,22 @@ struct SidebarView: View {
             Divider()
             Button(role: .destructive, action: {
                 withAnimation {
-                    store.delete(note)
-                    if selectedNoteID == note.id {
-                        if note.pinned {
-                            selectedNoteID = filteredNotes.first(where: { $0.id != note.id })?.id
-                        } else {
-                            selectedNoteID = filteredNotes.first(where: { $0.id != note.id && !$0.pinned })?.id
-                        }
-                    }
+                    deleteNote(note)
                 }
             }) {
                 Text("Delete")
                 Image(systemName: "trash")
+            }
+        }
+    }
+
+    private func deleteNote(_ note: Note) {
+        store.delete(note)
+        if selectedNoteID == note.id {
+            if note.pinned {
+                selectedNoteID = filteredNotes.first(where: { $0.id != note.id })?.id
+            } else {
+                selectedNoteID = filteredNotes.first(where: { $0.id != note.id && !$0.pinned })?.id
             }
         }
     }
@@ -2194,14 +2403,29 @@ struct SidebarView: View {
             }
         )
     }
+
+    private func scrollSelectionIntoView(using proxy: ScrollViewProxy, animated: Bool) {
+        guard let selectedNoteID else { return }
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    proxy.scrollTo(selectedNoteID, anchor: .center)
+                }
+            } else {
+                proxy.scrollTo(selectedNoteID, anchor: .center)
+            }
+        }
+    }
 }
 struct RichTextEditorWrapper: View {
     let note: Note
     let store: NoteStore
     @Binding var editorState: EditorState
+    @Binding var activeEditorColor: NSColor
     @Binding var selectedText: String
     @Binding var selectedRange: NSRange?
     @Binding var pendingAIAction: EditorAIActionRequest?
+    let spellCheckEnabled: Bool
     @FocusState var isFocused: MainPanel.FocusField?
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant
         .bluish.rawValue
@@ -2213,10 +2437,12 @@ struct RichTextEditorWrapper: View {
                 note: note,
                 store: store,
                 editorState: $editorState,
+                activeEditorColor: $activeEditorColor,
                 selectedText: $selectedText,
                 selectedRange: $selectedRange,
                 pendingAIAction: $pendingAIAction,
-                themeVariantRaw: themeVariantRaw
+                themeVariantRaw: themeVariantRaw,
+                spellCheckEnabled: spellCheckEnabled
             )
             .focused($isFocused, equals: .editor)
 
@@ -2370,50 +2596,43 @@ struct NoteRowView: View {
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZRectangleIcon(icon: "doc.text.fill", isSelected: isSelected)
-
+        HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(note.title.isEmpty ? "Untitled" : note.title)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(isSelected ? .white : Theme.text)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                HStack(spacing: 4) {
-                    Text(timeString(from: note.updatedAt))
-                        .lineLimit(1)
-
-                    if showsPinBadge {
-                        Text("•")
-                        Image(systemName: "pin.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(Theme.pinGold)
-                    }
-
-                    Text("•")
-                    Text(preview(for: contentPreviewText))
+                HStack(spacing: 6) {
+                    Text(note.title.isEmpty ? "Untitled" : note.title)
+                        .font(.system(size: 14, weight: isSelected ? .bold : .semibold))
+                        .foregroundColor(isSelected ? .white : Theme.text)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .help(note.title.isEmpty ? "Untitled" : note.title)
+
+                    if showsPinBadge {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(isSelected ? .white.opacity(0.9) : Theme.pinGold)
+                    }
                 }
-                .font(.system(size: 12))
-                .foregroundColor(isSelected ? .white.opacity(0.8) : Theme.textMuted)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(metadataText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(isSelected ? .white.opacity(0.72) : Theme.textMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(metadataText)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            Spacer()
-
-            if isSelected {
-                Image(systemName: "arrow.turn.down.left")
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.8))
-            }
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 12)
+        .frame(minHeight: 40)
         .background(isSelected ? rowSelectionColor : Color.clear)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Theme.selection.opacity(isSelected ? 1 : 0))
+                .frame(width: 2)
+                .padding(.vertical, 6)
+        }
         .cornerRadius(8)
         .padding(.horizontal, 8)
         .contentShape(Rectangle())
@@ -2425,10 +2644,37 @@ struct NoteRowView: View {
             : Theme.selection
     }
 
-    private func preview(for text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "No additional text" }
-        return trimmed.replacingOccurrences(of: "\n", with: " ")
+    private var metadataText: String {
+        if let categoryLabel {
+            return "\(timeString(from: note.updatedAt)) · \(categoryLabel)"
+        }
+        return timeString(from: note.updatedAt)
+    }
+
+    private var categoryLabel: String? {
+        if let tag = firstHashtagToken(in: note.title), !tag.isEmpty {
+            return tag
+        }
+        if let tag = firstHashtagToken(in: contentPreviewText), !tag.isEmpty {
+            return tag
+        }
+        if note.pinned {
+            return "Pinned"
+        }
+        return nil
+    }
+
+    private func firstHashtagToken(in text: String) -> String? {
+        for token in text.split(whereSeparator: \.isWhitespace) {
+            guard token.hasPrefix("#"), token.count > 1 else { continue }
+            let cleaned = token
+                .trimmingCharacters(in: .punctuationCharacters)
+                .dropFirst()
+            if !cleaned.isEmpty {
+                return String(cleaned).capitalized
+            }
+        }
+        return nil
     }
 
     private func timeString(from date: Date) -> String {
