@@ -355,9 +355,11 @@ struct PreferencesView: View {
                         Button(isRecordingHotkey ? "Recording... (Press keys)" : "Record Shortcut") {
                             startRecordingHotkey()
                         }
+                        .pointingHandCursor()
                         Button("Reset Default") {
                             resetDefaultHotkey()
                         }
+                        .pointingHandCursor()
                     }
 
                     if let hotkeyMessage {
@@ -374,6 +376,7 @@ struct PreferencesView: View {
                         .font(.subheadline)
 
                     Toggle("Enable Notion sync", isOn: $notionSyncEnabled)
+                        .pointingHandCursor()
                         .onTapGesture {
                             cancelRecordingIfNeeded()
                         }
@@ -415,9 +418,11 @@ struct PreferencesView: View {
                         Button("Save Settings") {
                             saveNotionSettings()
                         }
+                        .pointingHandCursor()
                         Button(isTestingNotionConnection ? "Testing..." : "Test Notion Connection") {
                             testNotionConnection()
                         }
+                        .pointingHandCursor()
                         .disabled(isTestingNotionConnection)
                         Text("Integration secret is stored in macOS Keychain.")
                             .font(.caption)
@@ -442,6 +447,7 @@ struct PreferencesView: View {
                         .font(.subheadline)
 
                     Toggle("Enable AI text actions", isOn: $aiEnabled)
+                        .pointingHandCursor()
                         .onTapGesture {
                             cancelRecordingIfNeeded()
                         }
@@ -468,6 +474,7 @@ struct PreferencesView: View {
                                 Button(isLoadingAIModels ? "Loading..." : "Refresh") {
                                     fetchAIModels(force: true)
                                 }
+                                .pointingHandCursor()
                                 .disabled(isLoadingAIModels)
                             }
                         } else {
@@ -499,6 +506,7 @@ struct PreferencesView: View {
                         Button("Save AI Settings") {
                             saveAISettings()
                         }
+                        .pointingHandCursor()
                         Text("API key is stored in macOS Keychain.")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -523,12 +531,14 @@ struct PreferencesView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .pointingHandCursor()
 
                     Picker("Selection Highlight", selection: $selectionColorChoice) {
                         Text("Blue").tag("blue")
                         Text("Gray").tag("gray")
                     }
                     .pickerStyle(.segmented)
+                    .pointingHandCursor()
                 }
 
                 Divider()
@@ -542,6 +552,7 @@ struct PreferencesView: View {
                     }) {
                         Text("Delete All Unpinned Notes")
                     }
+                    .pointingHandCursor()
                     
                     Button(role: .destructive, action: {
                         for note in store.notes {
@@ -551,6 +562,7 @@ struct PreferencesView: View {
                         Text("Delete Entire Database")
                             .foregroundColor(.red)
                     }
+                    .pointingHandCursor()
                 }
                 
                 Divider()
@@ -560,6 +572,7 @@ struct PreferencesView: View {
                     Button("Quit Notsy") {
                         NSApp.terminate(nil)
                     }
+                    .pointingHandCursor()
                 }
             }
             .padding(24)
@@ -582,7 +595,9 @@ struct PreferencesView: View {
             Button("Delete", role: .destructive) {
                 deleteAllUnpinnedNotes()
             }
+            .pointingHandCursor()
             Button("Cancel", role: .cancel) {}
+                .pointingHandCursor()
         } message: {
             let count = store.notes.filter { !$0.pinned }.count
             Text("This will permanently delete \(count) unpinned note\(count == 1 ? "" : "s").")

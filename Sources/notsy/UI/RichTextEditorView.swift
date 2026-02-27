@@ -10,6 +10,10 @@ class EditorScrollView: NSScrollView {
 }
 
 class CustomTextView: NSTextView {
+    fileprivate static let uncheckedCheckboxMarker = "☐ "
+    fileprivate static let checkedCheckboxMarker = "☑ "
+    fileprivate static let legacyCheckedCheckboxMarker = "✓ "
+
     static let editorFontSize: CGFloat = 15
     static let editorTextInset = NSSize(width: 8, height: 16)
     static let editorLineFragmentPadding: CGFloat = 5
@@ -312,17 +316,27 @@ class CustomTextView: NSTextView {
             let trimmed = lineString.trimmingCharacters(in: .whitespaces)
             let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
             
-            // Check if click happened directly on the circle
+            // Check if click happened directly on the checkbox marker
             let circleLocation = lineRange.location + leadingWhitespace.utf16.count
             if characterIndex == circleLocation || characterIndex == circleLocation + 1 {
-                if trimmed.hasPrefix("○ ") {
+                let markerFont: NSFont = {
+                    guard let textStorage = self.textStorage, textStorage.length > 0 else {
+                        return NSFont.monospacedSystemFont(ofSize: Self.editorFontSize + 2, weight: .regular)
+                    }
+                    let probeLocation = min(textStorage.length - 1, circleLocation + 2)
+                    let base = (textStorage.attribute(.font, at: probeLocation, effectiveRange: nil) as? NSFont)
+                        ?? NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
+                    let targetSize = max(base.pointSize + 2, Self.editorFontSize + 1)
+                    return NSFont(descriptor: base.fontDescriptor, size: targetSize) ?? base
+                }()
+                if trimmed.hasPrefix(Self.uncheckedCheckboxMarker) {
                     self.undoManager?.beginUndoGrouping()
-                    let greenDot = NSAttributedString(string: "◉", attributes: [
-                        .font: NSFont.systemFont(ofSize: Self.editorFontSize),
+                    let checkedBox = NSAttributedString(string: "☑", attributes: [
+                        .font: markerFont,
                         .foregroundColor: NSColor.systemGreen
                     ])
                     if let textStorage = self.textStorage {
-                        textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: greenDot)
+                        textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: checkedBox)
                         // Force the space immediately after the dot to be white so typing inherits white
                         if circleLocation + 1 < textStorage.length {
                             textStorage.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: circleLocation + 1, length: 1))
@@ -333,10 +347,10 @@ class CustomTextView: NSTextView {
                     self.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
                     if let delegate = self.delegate as? RichTextEditorView.Coordinator { delegate.saveState() }
                     return
-                } else if trimmed.hasPrefix("◉ ") {
+                } else if trimmed.hasPrefix(Self.checkedCheckboxMarker) || trimmed.hasPrefix(Self.legacyCheckedCheckboxMarker) {
                     self.undoManager?.beginUndoGrouping()
-                    let whiteCircle = NSAttributedString(string: "○", attributes: [
-                        .font: NSFont.systemFont(ofSize: Self.editorFontSize),
+                    let whiteCircle = NSAttributedString(string: "☐", attributes: [
+                        .font: markerFont,
                         .foregroundColor: Theme.editorTextNSColor
                     ])
                     if let textStorage = self.textStorage {
@@ -686,8 +700,9 @@ class CustomTextView: NSTextView {
 
     private func listMarkerPrefix(in text: String) -> String? {
         if let marker = Self.bulletMarkerPrefix(in: text) { return marker }
-        if text.hasPrefix("○ ") { return "○ " }
-        if text.hasPrefix("◉ ") { return "◉ " }
+        if text.hasPrefix(Self.uncheckedCheckboxMarker) { return Self.uncheckedCheckboxMarker }
+        if text.hasPrefix(Self.checkedCheckboxMarker) { return Self.checkedCheckboxMarker }
+        if text.hasPrefix(Self.legacyCheckedCheckboxMarker) { return Self.legacyCheckedCheckboxMarker }
         if text.hasPrefix("- ") { return "- " }
         return nil
     }
@@ -835,7 +850,7 @@ class CustomTextView: NSTextView {
         let lineString = ns.substring(with: lineRange)
         let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
         let isBullet = CustomTextView.bulletMarkerPrefix(in: leadingStripped) != nil
-        guard isBullet || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
+        guard isBullet || leadingStripped.hasPrefix("☐") || leadingStripped.hasPrefix("☑") || leadingStripped.hasPrefix("✓") || leadingStripped.hasPrefix("-") else { return false }
 
         if outdent {
             if lineString.hasPrefix("\t") {
@@ -870,7 +885,7 @@ class CustomTextView: NSTextView {
 
         guard !leadingWhitespace.isEmpty else { return false }
         let isBullet = CustomTextView.bulletMarkerPrefix(in: leadingStripped) != nil
-        guard isBullet || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") else { return false }
+        guard isBullet || leadingStripped.hasPrefix("☐") || leadingStripped.hasPrefix("☑") || leadingStripped.hasPrefix("✓") || leadingStripped.hasPrefix("-") else { return false }
 
         let markerStart = lineRange.location + leadingWhitespace.utf16.count
         let markerEnd = markerStart + 2
@@ -1251,15 +1266,16 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func applyTextColor(_ color: NSColor) {
             guard let textView = self.textView else { return }
-            let ranges = selectedTextRanges(in: textView)
-            if !ranges.isEmpty {
-                for range in ranges {
-                    textView.textStorage?.addAttribute(.foregroundColor, value: color, range: range)
-                    textView.layoutManager?.invalidateDisplay(forCharacterRange: range)
+            performUndoableFormattingEdit(on: textView, actionName: "Text Color") {
+                let ranges = selectedTextRanges(in: textView)
+                if !ranges.isEmpty {
+                    for range in ranges {
+                        textView.textStorage?.addAttribute(.foregroundColor, value: color, range: range)
+                        textView.layoutManager?.invalidateDisplay(forCharacterRange: range)
+                    }
                 }
+                textView.typingAttributes[.foregroundColor] = color
             }
-            textView.typingAttributes[.foregroundColor] = color
-            saveState()
         }
 
         private func openLinkEditor() {
@@ -1341,36 +1357,38 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func toggleStrikethrough() {
             guard let textView = self.textView else { return }
-            let ranges = selectedTextRanges(in: textView)
-            let newValue = parent.editorState.isStrikethrough
-                ? 0
-                : NSUnderlineStyle.single.rawValue
+            performUndoableFormattingEdit(on: textView, actionName: "Strikethrough") {
+                let ranges = selectedTextRanges(in: textView)
+                let newValue = parent.editorState.isStrikethrough
+                    ? 0
+                    : NSUnderlineStyle.single.rawValue
 
-            if !ranges.isEmpty {
-                for range in ranges {
-                    textView.textStorage?.addAttribute(.strikethroughStyle, value: newValue, range: range)
+                if !ranges.isEmpty {
+                    for range in ranges {
+                        textView.textStorage?.addAttribute(.strikethroughStyle, value: newValue, range: range)
+                    }
                 }
+                textView.typingAttributes[.strikethroughStyle] = newValue
             }
-            textView.typingAttributes[.strikethroughStyle] = newValue
-            saveState()
         }
 
         private func applyFontStyle(_ style: EditorFontStyle) {
             guard let textView = self.textView else { return }
-            let ranges = selectedTextRanges(in: textView)
+            performUndoableFormattingEdit(on: textView, actionName: "Font Style") {
+                let ranges = selectedTextRanges(in: textView)
 
-            if !ranges.isEmpty, let textStorage = textView.textStorage {
-                for selected in ranges {
-                    textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
-                        let current = (value as? NSFont) ?? (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                        textStorage.addAttribute(.font, value: self.font(for: style, basedOn: current), range: range)
+                if !ranges.isEmpty, let textStorage = textView.textStorage {
+                    for selected in ranges {
+                        textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                            let current = (value as? NSFont) ?? (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                            textStorage.addAttribute(.font, value: self.font(for: style, basedOn: current), range: range)
+                        }
                     }
+                } else {
+                    let current = (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                    textView.typingAttributes[.font] = font(for: style, basedOn: current)
                 }
-            } else {
-                let current = (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                textView.typingAttributes[.font] = font(for: style, basedOn: current)
             }
-            saveState()
         }
 
         private func font(for style: EditorFontStyle, basedOn current: NSFont) -> NSFont {
@@ -1398,29 +1416,30 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func applyFontSize(delta: CGFloat? = nil, defaultSize: CGFloat? = nil) {
             guard let textView = self.textView else { return }
-            let ranges = selectedTextRanges(in: textView)
+            performUndoableFormattingEdit(on: textView, actionName: "Font Size") {
+                let ranges = selectedTextRanges(in: textView)
 
-            func resized(_ font: NSFont) -> NSFont {
-                let currentSize = font.pointSize
-                let target = defaultSize ?? max(11, min(28, currentSize + (delta ?? 0)))
-                return NSFont(descriptor: font.fontDescriptor, size: target) ?? font
-            }
-
-            if !ranges.isEmpty, let textStorage = textView.textStorage {
-                for selected in ranges {
-                    textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
-                        let current = (value as? NSFont)
-                            ?? (textView.typingAttributes[.font] as? NSFont)
-                            ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                        textStorage.addAttribute(.font, value: resized(current), range: range)
-                    }
+                func resized(_ font: NSFont) -> NSFont {
+                    let currentSize = font.pointSize
+                    let target = defaultSize ?? max(11, min(28, currentSize + (delta ?? 0)))
+                    return NSFont(descriptor: font.fontDescriptor, size: target) ?? font
                 }
-            } else {
-                let current = (textView.typingAttributes[.font] as? NSFont)
-                    ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                textView.typingAttributes[.font] = resized(current)
+
+                if !ranges.isEmpty, let textStorage = textView.textStorage {
+                    for selected in ranges {
+                        textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                            let current = (value as? NSFont)
+                                ?? (textView.typingAttributes[.font] as? NSFont)
+                                ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                            textStorage.addAttribute(.font, value: resized(current), range: range)
+                        }
+                    }
+                } else {
+                    let current = (textView.typingAttributes[.font] as? NSFont)
+                        ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                    textView.typingAttributes[.font] = resized(current)
+                }
             }
-            saveState()
         }
 
         private func toggleBold() {
@@ -1433,44 +1452,108 @@ struct RichTextEditorView: NSViewRepresentable {
 
         private func toggleUnderline() {
             guard let textView = self.textView else { return }
-            let ranges = selectedTextRanges(in: textView)
-            let newValue = parent.editorState.isUnderline ? 0 : NSUnderlineStyle.single.rawValue
+            performUndoableFormattingEdit(on: textView, actionName: "Underline") {
+                let ranges = selectedTextRanges(in: textView)
+                let newValue = parent.editorState.isUnderline ? 0 : NSUnderlineStyle.single.rawValue
 
-            if !ranges.isEmpty {
-                for range in ranges {
-                    textView.textStorage?.addAttribute(.underlineStyle, value: newValue, range: range)
+                if !ranges.isEmpty {
+                    for range in ranges {
+                        textView.textStorage?.addAttribute(.underlineStyle, value: newValue, range: range)
+                    }
                 }
+                textView.typingAttributes[.underlineStyle] = newValue
             }
-            textView.typingAttributes[.underlineStyle] = newValue
-            saveState()
         }
 
         private func toggleFontTrait(_ trait: NSFontTraitMask, enable: Bool) {
             guard let textView = self.textView else { return }
-            let ranges = selectedTextRanges(in: textView)
-            let fontManager = NSFontManager.shared
+            performUndoableFormattingEdit(on: textView, actionName: "Font Trait") {
+                let ranges = selectedTextRanges(in: textView)
+                let fontManager = NSFontManager.shared
 
-            if !ranges.isEmpty, let textStorage = textView.textStorage {
-                for selected in ranges {
-                    textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
-                        let current = (value as? NSFont)
-                            ?? (textView.typingAttributes[.font] as? NSFont)
-                            ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                        let updated = enable
-                            ? (fontManager.convert(current, toHaveTrait: trait) as NSFont? ?? current)
-                            : (fontManager.convert(current, toNotHaveTrait: trait) as NSFont? ?? current)
-                        textStorage.addAttribute(.font, value: updated, range: range)
+                if !ranges.isEmpty, let textStorage = textView.textStorage {
+                    for selected in ranges {
+                        textStorage.enumerateAttribute(.font, in: selected, options: []) { value, range, _ in
+                            let current = (value as? NSFont)
+                                ?? (textView.typingAttributes[.font] as? NSFont)
+                                ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                            let updated = enable
+                                ? (fontManager.convert(current, toHaveTrait: trait) as NSFont? ?? current)
+                                : (fontManager.convert(current, toNotHaveTrait: trait) as NSFont? ?? current)
+                            textStorage.addAttribute(.font, value: updated, range: range)
+                        }
                     }
+                } else {
+                    let current = (textView.typingAttributes[.font] as? NSFont)
+                        ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
+                    let updated = enable
+                        ? (fontManager.convert(current, toHaveTrait: trait) as NSFont? ?? current)
+                        : (fontManager.convert(current, toNotHaveTrait: trait) as NSFont? ?? current)
+                    textView.typingAttributes[.font] = updated
                 }
-            } else {
-                let current = (textView.typingAttributes[.font] as? NSFont)
-                    ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize)
-                let updated = enable
-                    ? (fontManager.convert(current, toHaveTrait: trait) as NSFont? ?? current)
-                    : (fontManager.convert(current, toNotHaveTrait: trait) as NSFont? ?? current)
-                textView.typingAttributes[.font] = updated
             }
+        }
 
+        private func performUndoableFormattingEdit(
+            on textView: NSTextView,
+            actionName: String,
+            edit: () -> Void
+        ) {
+            guard let textStorage = textView.textStorage else { return }
+            let ranges = selectedTextRanges(in: textView)
+            let beforeSnapshots = ranges.map { textStorage.attributedSubstring(from: $0) }
+            let beforeTypingAttributes = textView.typingAttributes
+
+            textView.undoManager?.beginUndoGrouping()
+            edit()
+            let afterSnapshots = ranges.map { textStorage.attributedSubstring(from: $0) }
+            let afterTypingAttributes = textView.typingAttributes
+
+            if !ranges.isEmpty || !NSDictionary(dictionary: beforeTypingAttributes).isEqual(to: afterTypingAttributes) {
+                textView.undoManager?.registerUndo(withTarget: self) { target in
+                    target.applyFormattingSnapshot(
+                        on: textView,
+                        ranges: ranges,
+                        snapshots: beforeSnapshots,
+                        typingAttributes: beforeTypingAttributes,
+                        redoSnapshots: afterSnapshots,
+                        redoTypingAttributes: afterTypingAttributes
+                    )
+                }
+                textView.undoManager?.setActionName(actionName)
+            }
+            textView.undoManager?.endUndoGrouping()
+            saveState()
+        }
+
+        private func applyFormattingSnapshot(
+            on textView: NSTextView,
+            ranges: [NSRange],
+            snapshots: [NSAttributedString],
+            typingAttributes: [NSAttributedString.Key: Any],
+            redoSnapshots: [NSAttributedString],
+            redoTypingAttributes: [NSAttributedString.Key: Any]
+        ) {
+            guard let textStorage = textView.textStorage else { return }
+
+            textView.undoManager?.beginUndoGrouping()
+            for (index, range) in ranges.enumerated().reversed() where index < snapshots.count {
+                textStorage.replaceCharacters(in: range, with: snapshots[index])
+                textView.layoutManager?.invalidateDisplay(forCharacterRange: range)
+            }
+            textView.typingAttributes = typingAttributes
+
+            textView.undoManager?.registerUndo(withTarget: self) { target in
+                target.applyFormattingSnapshot(
+                    on: textView,
+                    ranges: ranges,
+                    snapshots: redoSnapshots,
+                    typingAttributes: redoTypingAttributes,
+                    redoSnapshots: snapshots,
+                    redoTypingAttributes: typingAttributes
+                )
+            }
+            textView.undoManager?.endUndoGrouping()
             saveState()
         }
 
@@ -1649,8 +1732,9 @@ struct RichTextEditorView: NSViewRepresentable {
             
             textView.undoManager?.beginUndoGrouping()
             
-            let checkStr = "○ "
-            let checkedStr = "◉ "
+            let checkStr = CustomTextView.uncheckedCheckboxMarker
+            let checkedStr = CustomTextView.checkedCheckboxMarker
+            let legacyCheckedStr = CustomTextView.legacyCheckedCheckboxMarker
             
             for lineRange in lineRanges.reversed() {
                 let lineString = text.substring(with: lineRange)
@@ -1661,15 +1745,43 @@ struct RichTextEditorView: NSViewRepresentable {
                 
                 if isCheckbox {
                     if trimmed.hasPrefix(checkStr) {
-                        textView.insertText(checkedStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkStr.utf16.count))
-                        textView.textStorage?.addAttribute(.foregroundColor, value: NSColor.systemGreen, range: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 1))
-                    } else if trimmed.hasPrefix(checkedStr) {
-                        textView.insertText("", replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkedStr.utf16.count))
+                        let markerLocation = lineRange.location + leadingWhitespace.utf16.count
+                        textView.insertText(
+                            checkedStr,
+                            replacementRange: NSRange(
+                                location: markerLocation,
+                                length: checkStr.utf16.count
+                            )
+                        )
+                        styleCheckboxMarker(in: textView, markerLocation: markerLocation, checked: true)
+                    } else if trimmed.hasPrefix(checkedStr) || trimmed.hasPrefix(legacyCheckedStr) {
+                        let markerLocation = lineRange.location + leadingWhitespace.utf16.count
+                        textView.insertText(
+                            checkStr,
+                            replacementRange: NSRange(
+                                location: markerLocation,
+                                length: trimmed.hasPrefix(checkedStr) ? checkedStr.utf16.count : legacyCheckedStr.utf16.count
+                            )
+                        )
+                        styleCheckboxMarker(in: textView, markerLocation: markerLocation, checked: false)
                     } else if let bullet = existingBullet {
-                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: bullet.utf16.count))
+                        let markerLocation = lineRange.location + leadingWhitespace.utf16.count
+                        textView.insertText(
+                            checkStr,
+                            replacementRange: NSRange(
+                                location: markerLocation,
+                                length: bullet.utf16.count
+                            )
+                        )
+                        styleCheckboxMarker(in: textView, markerLocation: markerLocation, checked: false)
                     } else {
                         if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 { continue }
-                        textView.insertText(checkStr, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 0))
+                        let markerLocation = lineRange.location + leadingWhitespace.utf16.count
+                        textView.insertText(
+                            checkStr,
+                            replacementRange: NSRange(location: markerLocation, length: 0)
+                        )
+                        styleCheckboxMarker(in: textView, markerLocation: markerLocation, checked: false)
                     }
                 } else {
                     if let bullet = existingBullet {
@@ -1678,8 +1790,9 @@ struct RichTextEditorView: NSViewRepresentable {
                         textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 2))
                     } else if trimmed.hasPrefix(checkStr) {
                         textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkStr.utf16.count))
-                    } else if trimmed.hasPrefix(checkedStr) {
-                        textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: checkedStr.utf16.count))
+                    } else if trimmed.hasPrefix(checkedStr) || trimmed.hasPrefix(legacyCheckedStr) {
+                        let markerLength = trimmed.hasPrefix(checkedStr) ? checkedStr.utf16.count : legacyCheckedStr.utf16.count
+                        textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: markerLength))
                     } else {
                         if lineString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && lineRanges.count > 1 { continue }
                         textView.insertText(bulletForLevel, replacementRange: NSRange(location: lineRange.location + leadingWhitespace.utf16.count, length: 0))
@@ -1694,6 +1807,42 @@ struct RichTextEditorView: NSViewRepresentable {
             
             textView.undoManager?.endUndoGrouping()
             saveState()
+        }
+
+        private func styleCheckboxMarker(
+            in textView: NSTextView,
+            markerLocation: Int,
+            checked: Bool
+        ) {
+            guard let textStorage = textView.textStorage, textStorage.length > 0 else { return }
+            guard markerLocation >= 0, markerLocation < textStorage.length else { return }
+
+            let markerRange = NSRange(location: markerLocation, length: 1)
+            let font = checkboxMarkerFont(in: textView, markerLocation: markerLocation)
+            textStorage.addAttribute(.font, value: font, range: markerRange)
+            textStorage.addAttribute(
+                .foregroundColor,
+                value: checked ? NSColor.systemGreen : Theme.editorTextNSColor,
+                range: markerRange
+            )
+        }
+
+        private func checkboxMarkerFont(in textView: NSTextView, markerLocation: Int) -> NSFont {
+            guard let textStorage = textView.textStorage, textStorage.length > 0 else {
+                return NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize + 2, weight: .regular)
+            }
+
+            let probeLocation = min(textStorage.length - 1, markerLocation + 2)
+            if probeLocation >= 0,
+               let lineFont = textStorage.attribute(.font, at: probeLocation, effectiveRange: nil) as? NSFont {
+                let targetSize = max(lineFont.pointSize + 2, CustomTextView.editorFontSize + 1)
+                return NSFont(descriptor: lineFont.fontDescriptor, size: targetSize) ?? lineFont
+            }
+            if let typingFont = textView.typingAttributes[.font] as? NSFont {
+                let targetSize = max(typingFont.pointSize + 2, CustomTextView.editorFontSize + 1)
+                return NSFont(descriptor: typingFont.fontDescriptor, size: targetSize) ?? typingFont
+            }
+            return NSFont.monospacedSystemFont(ofSize: CustomTextView.editorFontSize + 2, weight: .regular)
         }
 
         func textDidChange(_ notification: Notification) {
@@ -1739,7 +1888,7 @@ struct RichTextEditorView: NSViewRepresentable {
             guard !cleaned.isEmpty else { return "" }
 
             cleaned = cleaned.replacingOccurrences(
-                of: #"^\s*(?:[-*•]+|\d+[.)]|[○◉]|#+)\s+"#,
+                of: #"^\s*(?:[-*•]+|\d+[.)]|[☐☑✓]|#+)\s+"#,
                 with: "",
                 options: .regularExpression
             )
@@ -1820,7 +1969,9 @@ struct RichTextEditorView: NSViewRepresentable {
                 let lineString = text.substring(with: lineRange)
                 let trimmed = lineString.trimmingCharacters(in: .whitespaces)
                 if CustomTextView.bulletMarkerPrefix(in: trimmed) != nil { isBullet = true }
-                else if trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") { isCheckbox = true }
+                else if trimmed.hasPrefix(CustomTextView.uncheckedCheckboxMarker)
+                    || trimmed.hasPrefix(CustomTextView.checkedCheckboxMarker)
+                    || trimmed.hasPrefix(CustomTextView.legacyCheckedCheckboxMarker) { isCheckbox = true }
             }
 
             let activeColor: NSColor = {
@@ -1866,7 +2017,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 if chars.count >= markerColumn + 2 {
                     let marker = chars[markerColumn]
                     let markerSpacer = chars[markerColumn + 1]
-                    let isListMarker = (marker == "•" || marker == "-" || marker == "○" || marker == "◉") && markerSpacer == " "
+                    let isListMarker = (marker == "•" || marker == "-" || marker == "☐" || marker == "☑" || marker == "✓") && markerSpacer == " "
                     if isListMarker {
                         let markerStart = lineRange.location + leadingWhitespace.utf16.count
                         let markerEnd = markerStart + 2
@@ -1937,7 +2088,11 @@ struct RichTextEditorView: NSViewRepresentable {
             
             var prefixToContinue = ""
             if let bullet = CustomTextView.bulletMarkerPrefix(in: trimmedLine) { prefixToContinue = bullet }
-            else if trimmedLine.hasPrefix("○ ") || trimmedLine.hasPrefix("◉ ") { prefixToContinue = "○ " }
+            else if trimmedLine.hasPrefix(CustomTextView.uncheckedCheckboxMarker)
+                || trimmedLine.hasPrefix(CustomTextView.checkedCheckboxMarker)
+                || trimmedLine.hasPrefix(CustomTextView.legacyCheckedCheckboxMarker) {
+                prefixToContinue = CustomTextView.uncheckedCheckboxMarker
+            }
             else if trimmedLine.hasPrefix("- ") {
                 prefixToContinue = leadingWhitespace.isEmpty
                     ? "- "
@@ -1962,7 +2117,7 @@ struct RichTextEditorView: NSViewRepresentable {
                         textView.insertText("", replacementRange: fullLineRange)
                         textView.insertText("\n", replacementRange: textView.selectedRange())
                     }
-                    textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
+                    resetTypingAttributesForNewLine(in: textView)
                     
                     textView.undoManager?.endUndoGrouping()
                     saveState()
@@ -1981,10 +2136,10 @@ struct RichTextEditorView: NSViewRepresentable {
                     
                     // If it's a green checked dot we need to make sure the newly inserted one is white
                     let newCursor = textView.selectedRange()
-                    if prefixToContinue == "○ " {
+                    if prefixToContinue == CustomTextView.uncheckedCheckboxMarker {
                         textView.textStorage?.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: newCursor.location - 2, length: 1))
                     }
-                    textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
+                    resetTypingAttributesForNewLine(in: textView)
                     
                     textView.undoManager?.endUndoGrouping()
                     saveState()
@@ -1994,10 +2149,17 @@ struct RichTextEditorView: NSViewRepresentable {
             
             textView.undoManager?.beginUndoGrouping()
             textView.insertText("\n", replacementRange: textView.selectedRange())
-            textView.typingAttributes[.foregroundColor] = Theme.editorTextNSColor
+            resetTypingAttributesForNewLine(in: textView)
             textView.undoManager?.endUndoGrouping()
             saveState()
             return true
+        }
+
+        private func resetTypingAttributesForNewLine(in textView: NSTextView) {
+            var attrs = textView.typingAttributes
+            attrs[.foregroundColor] = Theme.editorTextNSColor
+            attrs[.strikethroughStyle] = 0
+            textView.typingAttributes = attrs
         }
 
         private func handleTab(_ textView: NSTextView) -> Bool {
@@ -2009,7 +2171,7 @@ struct RichTextEditorView: NSViewRepresentable {
             let leadingStripped = String(lineString.drop(while: { $0 == " " || $0 == "\t" })).trimmingCharacters(in: .newlines)
             
             let isBullet = CustomTextView.bulletMarkerPrefix(in: leadingStripped) != nil
-            if isBullet || leadingStripped.hasPrefix("○") || leadingStripped.hasPrefix("◉") || leadingStripped.hasPrefix("-") {
+            if isBullet || leadingStripped.hasPrefix("☐") || leadingStripped.hasPrefix("☑") || leadingStripped.hasPrefix("✓") || leadingStripped.hasPrefix("-") {
                 textView.insertText("\t", replacementRange: NSRange(location: lineRange.location, length: 0))
                 saveState()
                 return true
@@ -2045,7 +2207,11 @@ struct RichTextEditorView: NSViewRepresentable {
             let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
             let trimmed = lineString.trimmingCharacters(in: .whitespaces)
             let isBullet = CustomTextView.bulletMarkerPrefix(in: trimmed) != nil
-            guard isBullet || trimmed.hasPrefix("- ") || trimmed.hasPrefix("○ ") || trimmed.hasPrefix("◉ ") else { return false }
+            guard isBullet
+                    || trimmed.hasPrefix("- ")
+                    || trimmed.hasPrefix(CustomTextView.uncheckedCheckboxMarker)
+                    || trimmed.hasPrefix(CustomTextView.checkedCheckboxMarker)
+                    || trimmed.hasPrefix(CustomTextView.legacyCheckedCheckboxMarker) else { return false }
 
             let markerStart = lineRange.location + leadingWhitespace.utf16.count
             let contentStart = markerStart + 2

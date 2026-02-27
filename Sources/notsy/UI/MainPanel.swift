@@ -484,6 +484,7 @@ struct MainPanel: View {
                         .cornerRadius(4)
                     }
                     .buttonStyle(.plain)
+                    .pointingHandCursor()
                     .padding(.leading, 8)
 
                     Spacer()
@@ -531,6 +532,7 @@ struct MainPanel: View {
                                     .foregroundColor(Theme.textMuted)
                             }
                             .buttonStyle(.plain)
+                            .pointingHandCursor()
                         }
 
                         Image(nsImage: previewImage)
@@ -564,6 +566,7 @@ struct MainPanel: View {
                                     .frame(width: 32, height: 32)
                             }
                             .buttonStyle(.plain)
+                            .pointingHandCursor()
                         }
 
                         Text("Text")
@@ -767,6 +770,7 @@ struct MainPanel: View {
         if focus == .search,
             queryBuffer.isEmpty,
             selectedNoteID != nil,
+            !isSearchInputActive(),
             !event.modifierFlags.contains(.command),
             !event.modifierFlags.contains(.option),
             !event.modifierFlags.contains(.control),
@@ -911,6 +915,12 @@ struct MainPanel: View {
             }
         }
         return event
+    }
+
+    private func isSearchInputActive() -> Bool {
+        guard let responder = AppDelegate.shared?.panel.firstResponder else { return false }
+        guard let textView = responder as? NSTextView else { return false }
+        return textView.isFieldEditor
     }
 
     private func toggleZenMode() {
@@ -1332,49 +1342,58 @@ struct MainPanel: View {
                         submitAskAI(note: note)
                     }
                     .buttonStyle(.borderedProminent)
+                    .pointingHandCursor()
                     .disabled(aiCustomPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || aiIsRunning)
 
                     Button("Close") {
                         aiPopoverTrigger = nil
                     }
                     .buttonStyle(.bordered)
+                    .pointingHandCursor()
                 case .loading:
                     Button("Cancel") {
                         cancelAIRequest()
                     }
                     .buttonStyle(.bordered)
+                    .pointingHandCursor()
                 case .result:
                     Button("Replace selection") {
                         applyAIReplaceSelection()
                     }
                     .buttonStyle(.borderedProminent)
+                    .pointingHandCursor()
 
                     Button("Insert below") {
                         applyAIInsertBelowSelection()
                     }
                     .buttonStyle(.bordered)
+                    .pointingHandCursor()
 
                     Button("Try again") {
                         retryLastAI(note: note)
                     }
                     .buttonStyle(.bordered)
+                    .pointingHandCursor()
                     .disabled(!canRetryAIRequest || aiIsRunning)
 
                     Button("Close") {
                         aiPopoverTrigger = nil
                     }
                     .buttonStyle(.bordered)
+                    .pointingHandCursor()
                 case .error:
                     Button("Try again") {
                         retryLastAI(note: note)
                     }
                     .buttonStyle(.borderedProminent)
+                    .pointingHandCursor()
                     .disabled(!canRetryAIRequest || aiIsRunning)
 
                     Button("Dismiss") {
                         dismissAIError()
                     }
                     .buttonStyle(.bordered)
+                    .pointingHandCursor()
                 }
             }
         }
@@ -1627,6 +1646,7 @@ struct MainPanel: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .buttonStyle(PointerPlainButtonStyle())
+            .pointingHandCursor()
             .fixedSize(horizontal: true, vertical: false)
             .help("Choose font style")
 
@@ -1921,7 +1941,7 @@ struct SidebarView: View {
                         if !buckets.recent.isEmpty {
                             sectionBlock(
                                 id: "recent",
-                                title: "RECENT",
+                                title: "LAST 7 DAYS",
                                 notes: buckets.recent,
                                 isCollapsed: $recentCollapsed,
                                 destinationPinned: false
@@ -1967,6 +1987,7 @@ struct SidebarView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .pointingHandCursor()
                         .padding(.horizontal, 4)
                     }
                     .padding(.bottom, 16)
@@ -1977,11 +1998,9 @@ struct SidebarView: View {
                 }
                 .onChange(of: selectedNoteID) { _, _ in
                     expandSectionForSelection()
-                    scrollSelectionIntoView(using: proxy, animated: false)
                 }
                 .onChange(of: filteredNotes.map(\.id)) { _, _ in
                     expandSectionForSelection()
-                    scrollSelectionIntoView(using: proxy, animated: false)
                 }
                 .onChange(of: draggedNoteID) { _, newValue in
                     if newValue == nil {
@@ -2061,6 +2080,7 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
             .onHover { isHovering in
                 if isHovering {
                     hoveredSectionID = id
@@ -2247,12 +2267,14 @@ struct SidebarView: View {
                         Label("Delete", systemImage: "trash")
                     }
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 10, weight: .bold))
+                    Text("⋮")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textMuted)
                         .frame(width: 18, height: 18)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .pointingHandCursor()
                 .fixedSize()
                 .help("More")
                 .padding(.trailing, 12)
@@ -2564,6 +2586,7 @@ struct ColorPalettePopover: View {
                             .frame(width: 20, height: 20)
                     }
                     .buttonStyle(.plain)
+                    .pointingHandCursor()
                 }
             }
         }

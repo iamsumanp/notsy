@@ -129,10 +129,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showWindow() {
+        let shouldMoveAcrossScreens = panel.isVisible && shouldMoveVisiblePanelToActiveScreen()
+        if shouldMoveAcrossScreens {
+            panel.orderOut(nil)
+        }
+
         if let screen = activeMouseScreen() {
             let x = screen.frame.origin.x + (screen.frame.width - panel.frame.width) / 2
             let y = screen.frame.origin.y + (screen.frame.height - panel.frame.height) / 2
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
+            let targetFrame = NSRect(origin: NSPoint(x: x, y: y), size: panel.frame.size)
+            panel.setFrame(targetFrame, display: false, animate: false)
         } else {
             panel.center()
         }
