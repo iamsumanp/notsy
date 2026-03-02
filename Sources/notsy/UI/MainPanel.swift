@@ -555,6 +555,21 @@ struct MainPanel: View {
                             .scaledToFit()
                             .frame(maxWidth: 820, maxHeight: 520)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .contextMenu {
+                                Button("Copy Image") {
+                                    copyPreviewImage(previewImage)
+                                }
+                                Button("Save Image As...") {
+                                    savePreviewImageAs(previewImage)
+                                }
+                                Button("Open in Preview") {
+                                    openPreviewImageInSystemPreview(previewImage)
+                                }
+                                Divider()
+                                Button("Close Preview") {
+                                    self.previewImage = nil
+                                }
+                            }
                     }
                     .padding(20)
                 }
@@ -958,6 +973,62 @@ struct MainPanel: View {
                 manualSaveStatusMessage = nil
             }
         }
+    }
+
+    private func copyPreviewImage(_ image: NSImage) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let didWriteImage = pasteboard.writeObjects([image])
+
+        if !didWriteImage, let png = pngData(from: image) {
+            let item = NSPasteboardItem()
+            item.setData(png, forType: .png)
+            _ = pasteboard.writeObjects([item])
+        }
+        showManualSaveStatus("Image copied.")
+    }
+
+    private func savePreviewImageAs(_ image: NSImage) {
+        guard let data = pngData(from: image) else {
+            showManualSaveStatus("Unable to save image.")
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "notsy-image.png"
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try data.write(to: url, options: .atomic)
+                showManualSaveStatus("Image saved.")
+            } catch {
+                showManualSaveStatus("Failed to save image.")
+            }
+        }
+    }
+
+    private func openPreviewImageInSystemPreview(_ image: NSImage) {
+        guard let data = pngData(from: image) else {
+            showManualSaveStatus("Unable to open image.")
+            return
+        }
+
+        let filename = "notsy-preview-\(UUID().uuidString).png"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        do {
+            try data.write(to: tempURL, options: .atomic)
+            NSWorkspace.shared.open(tempURL)
+        } catch {
+            showManualSaveStatus("Failed to open image.")
+        }
+    }
+
+    private func pngData(from image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     private func isSearchInputActive() -> Bool {

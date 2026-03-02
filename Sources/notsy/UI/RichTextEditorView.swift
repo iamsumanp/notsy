@@ -18,8 +18,25 @@ class CustomTextView: NSTextView {
     static let editorFontSize: CGFloat = 15
     static let editorTextInset = NSSize(width: 8, height: 16)
     static let editorLineFragmentPadding: CGFloat = 5
-    private static let imageThumbnailWidth: CGFloat = 56
-    private static let imageThumbnailMaxHeight: CGFloat = 34
+    private static let defaultImageDisplayWidth: CGFloat = 260
+    private static let minResizableImageWidth: CGFloat = 24
+    private static let minResizableImageHeight: CGFloat = 12
+    private static let resizeHandleVisualSize: CGFloat = 12
+    private static let resizeHandleHitPadding: CGFloat = 4
+    private static let resizeDragThreshold: CGFloat = 5
+    private static let diagonalResizeCursor: NSCursor = {
+        if let symbol = NSImage(
+            systemSymbolName: "arrow.up.left.and.arrow.down.right.circle.fill",
+            accessibilityDescription: nil
+        ) {
+            symbol.size = NSSize(width: 18, height: 18)
+            return NSCursor(
+                image: symbol,
+                hotSpot: NSPoint(x: symbol.size.width / 2, y: symbol.size.height / 2)
+            )
+        }
+        return .crosshair
+    }()
     private static let fallbackTabInterval: CGFloat = 28
     static let bulletMarkers: [String] = ["• ", "◦ ", "∙ "]
     private static let codeDefaultForegroundColor = NSColor(
@@ -60,6 +77,14 @@ class CustomTextView: NSTextView {
     private var isNormalizingAttachments = false
     private var isNormalizingListParagraphStyles = false
     private var pendingEditedRange: NSRange?
+    private var imageTrackingArea: NSTrackingArea?
+    private var hoveredAttachmentIndex: Int?
+    private var resizeAttachmentIndex: Int?
+    private var resizeStartPoint: NSPoint = .zero
+    private var resizeStartSize: NSSize = .zero
+    private var resizeStartAttachmentRect: NSRect = .zero
+    private var resizeAspectRatio: CGFloat = 1
+    private var didBeginResizeDrag = false
 
     private enum DetectedCodeLanguage: String {
         case swift
@@ -73,6 +98,16 @@ class CustomTextView: NSTextView {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = 4
         return style
+    }
+
+    private func cleanDefaultTypingAttributes(color: NSColor) -> [NSAttributedString.Key: Any] {
+        [
+            .font: NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular),
+            .foregroundColor: color,
+            .paragraphStyle: Self.defaultParagraphStyle(),
+            .underlineStyle: 0,
+            .strikethroughStyle: 0
+        ]
     }
 
 
@@ -206,8 +241,7 @@ class CustomTextView: NSTextView {
         applyImageSize(
             to: attachment,
             range: attachmentRange,
-            targetWidth: Self.imageThumbnailWidth,
-            preserveExpanded: false
+            targetWidth: Self.defaultImageDisplayWidth
         )
         let cursor = selection.location + attributed.length
         setSelectedRange(NSRange(location: cursor, length: 0))
@@ -278,12 +312,12 @@ class CustomTextView: NSTextView {
 
     func resetTypingAttributesForCurrentSelection() {
         guard let textStorage else {
-            typingAttributes = normalizedTypingAttributes(forceDefaultColor: true)
+            typingAttributes = cleanDefaultTypingAttributes(color: Theme.editorTextNSColor)
             return
         }
 
         guard textStorage.length > 0 else {
-            typingAttributes = normalizedTypingAttributes(forceDefaultColor: true)
+            typingAttributes = cleanDefaultTypingAttributes(color: Theme.editorTextNSColor)
             return
         }
 
@@ -432,6 +466,10 @@ class CustomTextView: NSTextView {
 
     override func mouseDown(with event: NSEvent) {
         let point = self.convert(event.locationInWindow, from: nil)
+        if beginImageResizeIfNeeded(at: point) {
+            return
+        }
+
         let clickedIndex = self.characterIndexForInsertion(at: point)
         if let ns = textStorage, clickedIndex >= 0, clickedIndex < ns.length,
            let linkValue = ns.attribute(.link, at: clickedIndex, effectiveRange: nil) {
@@ -514,6 +552,100 @@ class CustomTextView: NSTextView {
         super.mouseDown(with: event)
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        guard let resizeAttachmentIndex else {
+            super.mouseDragged(with: event)
+            return
+        }
+
+        let point = convert(event.locationInWindow, from: nil)
+        let dx = point.x - resizeStartPoint.x
+        let dy = (isFlipped ? 1 : -1) * (point.y - resizeStartPoint.y)
+        let distance = hypot(dx, dy)
+
+        if !didBeginResizeDrag {
+            if distance < Self.resizeDragThreshold {
+                return
+            }
+            didBeginResizeDrag = true
+        }
+
+        applyResizeDrag(
+            for: resizeAttachmentIndex,
+            point: point,
+            freeResize: event.modifierFlags.contains(.shift)
+        )
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if resizeAttachmentIndex != nil {
+            let didResize = didBeginResizeDrag
+            let point = convert(event.locationInWindow, from: nil)
+            clearImageResizeState(updateHoverAt: point)
+            if didResize, let delegate = delegate as? RichTextEditorView.Coordinator {
+                delegate.saveState()
+            }
+            return
+        }
+        super.mouseUp(with: event)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let imageTrackingArea {
+            removeTrackingArea(imageTrackingArea)
+        }
+        let options: NSTrackingArea.Options = [
+            .activeInKeyWindow,
+            .inVisibleRect,
+            .mouseMoved,
+            .cursorUpdate,
+            .mouseEnteredAndExited,
+            .enabledDuringMouseDrag
+        ]
+        let tracking = NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil)
+        addTrackingArea(tracking)
+        imageTrackingArea = tracking
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.acceptsMouseMovedEvents = true
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        updateHoveredAttachment(at: point)
+        if isPointOverResizeHandle(point) {
+            Self.diagonalResizeCursor.set()
+        }
+        super.mouseMoved(with: event)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if isPointOverResizeHandle(point) {
+            Self.diagonalResizeCursor.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHoveredAttachmentIndex(nil)
+        super.mouseExited(with: event)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let attachmentIndex = hoveredAttachmentIndex,
+              let attachmentRect = attachmentRect(for: attachmentIndex) else { return }
+        addCursorRect(
+            imageResizeHandleHitRect(for: attachmentRect),
+            cursor: Self.diagonalResizeCursor
+        )
+    }
+
     override func didChangeText() {
         normalizeListParagraphStylesIfNeeded()
         normalizeImageAttachmentsIfNeeded()
@@ -523,6 +655,7 @@ class CustomTextView: NSTextView {
             self.pendingEditedRange = nil
         }
         super.didChangeText()
+        refreshImageChrome()
     }
 
     private func applyCodeHighlightingForEditedRange(_ editedRange: NSRange, preferredLanguage: DetectedCodeLanguage?) {
@@ -915,10 +1048,29 @@ class CustomTextView: NSTextView {
         defer { isNormalizingAttachments = false }
 
         let wholeRange = NSRange(location: 0, length: textStorage.length)
+        var attachmentRanges: [NSRange] = []
         textStorage.enumerateAttribute(.attachment, in: wholeRange, options: []) { value, range, _ in
-            guard let attachment = value as? NSTextAttachment else { return }
-            self.applyImageSize(to: attachment, range: range, targetWidth: Self.imageThumbnailWidth, preserveExpanded: false)
+            guard value is NSTextAttachment else { return }
+            attachmentRanges.append(range)
         }
+
+        for range in attachmentRanges {
+            guard range.location < textStorage.length,
+                  let attachment = textStorage.attribute(.attachment, at: range.location, effectiveRange: nil)
+                    as? NSTextAttachment else { continue }
+            let currentWidth = attachment.bounds.width
+            let targetWidth = currentWidth > 1
+                ? min(currentWidth, self.availableImageWidth())
+                : Self.defaultImageDisplayWidth
+            self.applyImageSize(
+                to: attachment,
+                range: range,
+                targetWidth: targetWidth
+            )
+            self.alignAttachmentVerticallyIfNeeded(attachment: attachment, attachmentRange: range)
+            self.centerAttachmentParagraphIfNeeded(attachmentRange: range)
+        }
+        refreshImageChrome()
     }
 
     private func handleImageTap(at characterIndex: Int) -> Bool {
@@ -956,6 +1108,136 @@ class CustomTextView: NSTextView {
         return nil
     }
 
+    private func beginImageResizeIfNeeded(at point: NSPoint) -> Bool {
+        guard let attachmentIndex = attachmentCharacterIndex(at: point),
+              let attachmentRect = attachmentRect(for: attachmentIndex),
+              imageResizeHandleHitRect(for: attachmentRect).contains(point),
+              let textStorage,
+              textStorage.length > 0,
+              let attachment = textStorage.attribute(.attachment, at: attachmentIndex, effectiveRange: nil)
+                as? NSTextAttachment else {
+            return false
+        }
+
+        var range = NSRange(location: attachmentIndex, length: 1)
+        _ = textStorage.attribute(.attachment, at: attachmentIndex, effectiveRange: &range)
+        let currentSize = resolvedAttachmentSize(for: attachment)
+
+        resizeAttachmentIndex = attachmentIndex
+        resizeStartPoint = point
+        resizeStartSize = currentSize
+        resizeStartAttachmentRect = attachmentRect
+        resizeAspectRatio = max(0.1, currentSize.width / max(currentSize.height, 1))
+        didBeginResizeDrag = false
+        setHoveredAttachmentIndex(attachmentIndex)
+        window?.makeFirstResponder(self)
+        return true
+    }
+
+    private func applyResizeDrag(
+        for attachmentIndex: Int,
+        point: NSPoint,
+        freeResize: Bool
+    ) {
+        guard let textStorage,
+              attachmentIndex >= 0,
+              attachmentIndex < textStorage.length else { return }
+        var effectiveRange = NSRange(location: attachmentIndex, length: 1)
+        guard let attachment = textStorage.attribute(.attachment, at: attachmentIndex, effectiveRange: &effectiveRange)
+                as? NSTextAttachment else { return }
+
+        let maxWidth = availableImageWidth()
+        let minWidth = min(Self.minResizableImageWidth, maxWidth)
+        let widthFromX = point.x - resizeStartAttachmentRect.minX
+        let newWidth = min(max(widthFromX, minWidth), maxWidth)
+        var newHeight = resizeStartSize.height
+
+        if freeResize {
+            let proposedHeight: CGFloat
+            if isFlipped {
+                proposedHeight = point.y - resizeStartAttachmentRect.minY
+            } else {
+                proposedHeight = resizeStartAttachmentRect.maxY - point.y
+            }
+            newHeight = max(Self.minResizableImageHeight, proposedHeight)
+        } else {
+            newHeight = max(Self.minResizableImageHeight, newWidth / max(resizeAspectRatio, 0.1))
+        }
+
+        attachment.bounds = NSRect(
+            origin: .zero,
+            size: NSSize(width: floor(newWidth), height: floor(newHeight))
+        )
+        alignAttachmentVerticallyIfNeeded(attachment: attachment, attachmentRange: effectiveRange)
+        centerAttachmentParagraphIfNeeded(attachmentRange: effectiveRange)
+        textStorage.edited([.editedAttributes], range: effectiveRange, changeInLength: 0)
+        needsDisplay = true
+    }
+
+    private func clearImageResizeState(updateHoverAt point: NSPoint?) {
+        resizeAttachmentIndex = nil
+        didBeginResizeDrag = false
+        resizeStartPoint = .zero
+        resizeStartSize = .zero
+        resizeStartAttachmentRect = .zero
+        resizeAspectRatio = 1
+        if let point {
+            updateHoveredAttachment(at: point)
+        } else {
+            setHoveredAttachmentIndex(nil)
+        }
+        needsDisplay = true
+    }
+
+    private func isPointOverResizeHandle(_ point: NSPoint) -> Bool {
+        guard let attachmentIndex = attachmentCharacterIndex(at: point),
+              let attachmentRect = attachmentRect(for: attachmentIndex) else { return false }
+        return imageResizeHandleHitRect(for: attachmentRect).contains(point)
+    }
+
+    private func updateHoveredAttachment(at point: NSPoint) {
+        guard resizeAttachmentIndex == nil else { return }
+        setHoveredAttachmentIndex(attachmentCharacterIndex(at: point))
+    }
+
+    private func setHoveredAttachmentIndex(_ index: Int?) {
+        if hoveredAttachmentIndex == index { return }
+        hoveredAttachmentIndex = index
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+
+    private func selectedAttachmentIndex() -> Int? {
+        guard let textStorage, textStorage.length > 0 else { return nil }
+        let selected = selectedRange()
+
+        if selected.length > 0 {
+            var foundIndex: Int?
+            textStorage.enumerateAttribute(.attachment, in: selected, options: []) { value, range, stop in
+                if value is NSTextAttachment {
+                    foundIndex = range.location
+                    stop.pointee = true
+                }
+            }
+            return foundIndex
+        }
+
+        let candidates = [selected.location, selected.location - 1]
+            .filter { $0 >= 0 && $0 < textStorage.length }
+        for candidate in candidates {
+            if textStorage.attribute(.attachment, at: candidate, effectiveRange: nil) is NSTextAttachment {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private var chromeAttachmentIndex: Int? {
+        if let resizeAttachmentIndex { return resizeAttachmentIndex }
+        if let hoveredAttachmentIndex { return hoveredAttachmentIndex }
+        return selectedAttachmentIndex()
+    }
+
     private func attachmentRect(for characterIndex: Int) -> NSRect? {
         guard let layoutManager, let textContainer else { return nil }
         let charRange = NSRange(location: characterIndex, length: 1)
@@ -966,34 +1248,135 @@ class CustomTextView: NSTextView {
         return rect
     }
 
-    private func applyImageSize(to attachment: NSTextAttachment, range: NSRange, targetWidth: CGFloat, preserveExpanded: Bool) {
-        let maxWidth = min(targetWidth, availableImageWidth())
-        guard maxWidth > 0 else { return }
-
-        if preserveExpanded, attachment.bounds.width > Self.imageThumbnailWidth + 2 {
-            return
-        }
-
+    private func resolvedAttachmentSize(for attachment: NSTextAttachment) -> NSSize {
         if attachment.image == nil, let decoded = decodedImage(from: attachment) {
             attachment.image = decoded
         }
 
         let imageSize = attachment.image?.size ?? attachment.attachmentCell?.cellSize() ?? .zero
+        guard imageSize.width > 0, imageSize.height > 0 else {
+            return NSSize(width: Self.defaultImageDisplayWidth, height: Self.defaultImageDisplayWidth * 0.6)
+        }
+
+        if attachment.bounds.width > 1, attachment.bounds.height > 1 {
+            return attachment.bounds.size
+        }
+
+        let maxWidth = availableImageWidth()
+        let defaultWidth = min(Self.defaultImageDisplayWidth, maxWidth)
+        let scale = defaultWidth / imageSize.width
+        return NSSize(
+            width: floor(defaultWidth),
+            height: floor(imageSize.height * scale)
+        )
+    }
+
+    private func applyImageSize(to attachment: NSTextAttachment, range: NSRange, targetWidth: CGFloat) {
+        let maxWidth = availableImageWidth()
+        guard maxWidth > 0 else { return }
+
+        let imageSize = resolvedAttachmentSize(for: attachment)
         guard imageSize.width > 0, imageSize.height > 0 else { return }
 
-        let widthScale = maxWidth / imageSize.width
-        let heightScale = Self.imageThumbnailMaxHeight / imageSize.height
-        let scale = min(1.0, widthScale, heightScale)
-        let newSize = NSSize(width: floor(imageSize.width * scale), height: floor(imageSize.height * scale))
+        let clampedWidth = min(max(targetWidth, 1), maxWidth)
+        let ratio = imageSize.height / max(imageSize.width, 1)
+        let newSize = NSSize(
+            width: floor(clampedWidth),
+            height: floor(clampedWidth * ratio)
+        )
         attachment.bounds = NSRect(origin: .zero, size: newSize)
 
         // Refresh layout for the single attachment run.
         textStorage?.edited([.editedAttributes], range: range, changeInLength: 0)
     }
 
+    private func centerAttachmentParagraphIfNeeded(attachmentRange: NSRange) {
+        guard let textStorage, textStorage.length > 0 else { return }
+        let text = textStorage.string as NSString
+        let paragraphRange = text.paragraphRange(for: attachmentRange)
+        let trimmed = text.substring(with: paragraphRange).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.utf16.count == 1 else { return }
+
+        var contentLength = paragraphRange.length
+        while contentLength > 0 {
+            let char = text.character(at: paragraphRange.location + contentLength - 1)
+            if char == 10 || char == 13 {
+                contentLength -= 1
+            } else {
+                break
+            }
+        }
+        guard contentLength > 0 else { return }
+
+        let contentRange = NSRange(location: paragraphRange.location, length: contentLength)
+        var attachmentCharacterRange: NSRange?
+        textStorage.enumerateAttribute(.attachment, in: contentRange, options: []) { value, range, stop in
+            guard value is NSTextAttachment else { return }
+            attachmentCharacterRange = range
+            stop.pointee = true
+        }
+        guard let attachmentCharacterRange else { return }
+
+        let attachmentAttributed = textStorage.attributedSubstring(from: attachmentCharacterRange)
+        textStorage.replaceCharacters(in: contentRange, with: attachmentAttributed)
+
+        let normalizedParagraphRange = (textStorage.string as NSString).paragraphRange(
+            for: NSRange(location: attachmentCharacterRange.location, length: 0)
+        )
+        guard normalizedParagraphRange.length > 0 else { return }
+
+        let sourceIndex = min(normalizedParagraphRange.location, max(0, textStorage.length - 1))
+        let paragraph = ((textStorage.attribute(.paragraphStyle, at: sourceIndex, effectiveRange: nil)
+            as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+
+        var changed = false
+        if paragraph.alignment != .center {
+            paragraph.alignment = .center
+            changed = true
+        }
+        if paragraph.lineSpacing != 4 {
+            paragraph.lineSpacing = 4
+            changed = true
+        }
+
+        if changed {
+            textStorage.addAttribute(.paragraphStyle, value: paragraph, range: normalizedParagraphRange)
+        }
+    }
+
+    private func alignAttachmentVerticallyIfNeeded(
+        attachment: NSTextAttachment,
+        attachmentRange: NSRange
+    ) {
+        guard let textStorage, textStorage.length > 0 else { return }
+        let text = textStorage.string as NSString
+        let paragraphRange = text.paragraphRange(for: attachmentRange)
+
+        // If paragraph has only the attachment (plus whitespace/newline), keep block behavior.
+        let trimmed = text.substring(with: paragraphRange).trimmingCharacters(in: .whitespacesAndNewlines)
+        let isAttachmentOnlyParagraph = trimmed.utf16.count == 1
+
+        let targetYOffset: CGFloat
+        if isAttachmentOnlyParagraph {
+            targetYOffset = 0
+        } else {
+            let probeIndex = min(paragraphRange.location, max(0, textStorage.length - 1))
+            let font = (textStorage.attribute(.font, at: probeIndex, effectiveRange: nil) as? NSFont)
+                ?? (typingAttributes[.font] as? NSFont)
+                ?? NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
+            let lineHeight = ceil(font.ascender - font.descender + font.leading)
+            targetYOffset = -max(0, (attachment.bounds.height - lineHeight) / 2)
+        }
+
+        if abs(attachment.bounds.origin.y - targetYOffset) > 0.25 {
+            attachment.bounds.origin.y = targetYOffset
+            textStorage.edited([.editedAttributes], range: attachmentRange, changeInLength: 0)
+        }
+    }
+
     private func availableImageWidth() -> CGFloat {
         let inset = textContainerInset.width * 2
-        return max(120, bounds.width - inset - 24)
+        return max(Self.minResizableImageWidth, bounds.width - inset - 24)
     }
 
     private func decodedImage(from attachment: NSTextAttachment) -> NSImage? {
@@ -1001,6 +1384,23 @@ class CustomTextView: NSTextView {
             return NSImage(data: data)
         }
         return nil
+    }
+
+    private func imageResizeHandleRect(for attachmentRect: NSRect) -> NSRect {
+        let size = Self.resizeHandleVisualSize
+        let x = attachmentRect.maxX - size
+        let y = isFlipped ? attachmentRect.maxY - size : attachmentRect.minY
+        return NSRect(x: x, y: y, width: size, height: size)
+    }
+
+    private func imageResizeHandleHitRect(for attachmentRect: NSRect) -> NSRect {
+        imageResizeHandleRect(for: attachmentRect)
+            .insetBy(dx: -Self.resizeHandleHitPadding, dy: -Self.resizeHandleHitPadding)
+    }
+
+    func refreshImageChrome() {
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
     }
 
     private func handleListTab(outdent: Bool) -> Bool {
@@ -1098,6 +1498,39 @@ class CustomTextView: NSTextView {
         insertText(expectedBullet, replacementRange: NSRange(location: markerLocation, length: currentBullet.utf16.count))
     }
 
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        guard let attachmentIndex = chromeAttachmentIndex,
+              let attachmentRect = attachmentRect(for: attachmentIndex),
+              attachmentRect.intersects(dirtyRect) else { return }
+
+        let outlineRect = attachmentRect.insetBy(dx: -1, dy: -1)
+        NSColor.white.withAlphaComponent(0.22).setStroke()
+        let outline = NSBezierPath(roundedRect: outlineRect, xRadius: 3, yRadius: 3)
+        outline.lineWidth = 1
+        outline.stroke()
+
+        let handleRect = imageResizeHandleRect(for: attachmentRect)
+        let handlePath = NSBezierPath(roundedRect: handleRect, xRadius: 2, yRadius: 2)
+        NSColor.white.withAlphaComponent(0.95).setFill()
+        handlePath.fill()
+        NSColor.black.withAlphaComponent(0.22).setStroke()
+        handlePath.lineWidth = 0.8
+        handlePath.stroke()
+
+        let grip = NSBezierPath()
+        grip.lineWidth = 1
+        let endX = handleRect.maxX - 2
+        let endY = handleRect.maxY - 2
+        for inset in [6.0, 4.0, 2.0] {
+            grip.move(to: NSPoint(x: endX - inset, y: endY))
+            grip.line(to: NSPoint(x: endX, y: endY - inset))
+        }
+        NSColor.black.withAlphaComponent(0.45).setStroke()
+        grip.stroke()
+    }
+
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
         var caretRect = rect
         caretRect.size.width = 1
@@ -1108,7 +1541,11 @@ class CustomTextView: NSTextView {
         // When cursor sits on an attachment line, AppKit can report a very tall caret rect.
         // Clamp it to a normal text line height so typing next to images feels natural.
         if caretRect.height > normalHeight * 1.8 {
-            caretRect.origin.y = caretRect.maxY - normalHeight - 2
+            if isFlipped {
+                caretRect.origin.y = caretRect.minY + 2
+            } else {
+                caretRect.origin.y = caretRect.maxY - normalHeight - 2
+            }
             caretRect.size.height = normalHeight
         }
 
@@ -2471,8 +2908,11 @@ struct RichTextEditorView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            if let customTextView = textView as? CustomTextView, textView.selectedRange().length == 0 {
-                customTextView.resetTypingAttributesForCurrentSelection()
+            if let customTextView = textView as? CustomTextView {
+                if textView.selectedRange().length == 0 {
+                    customTextView.resetTypingAttributesForCurrentSelection()
+                }
+                customTextView.refreshImageChrome()
             }
             updateFormattingState(for: textView)
             updateSelectionText(for: textView)
