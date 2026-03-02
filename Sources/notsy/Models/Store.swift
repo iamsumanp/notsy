@@ -193,6 +193,15 @@ final class NoteStore {
                 case .failed(let message):
                     notionSyncStatusIsError = true
                     notionSyncStatusMessage = "Notion sync failed: \(message)"
+                    clearNotionStatusTask?.cancel()
+                    clearNotionStatusTask = Task {
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            notionSyncStatusIsError = false
+                            notionSyncStatusMessage = nil
+                        }
+                    }
                 }
             }
         }

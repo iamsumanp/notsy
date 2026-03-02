@@ -1,5 +1,11 @@
 import Foundation
 
+struct AIInputImage: Equatable {
+    let token: String
+    let data: Data
+    let mimeType: String
+}
+
 enum AIWritingError: LocalizedError {
     case disabled
     case missingAPIKey
@@ -79,7 +85,12 @@ actor AIWritingService {
         return sorted
     }
 
-    func rewriteSelection(selection: String, instruction: String, noteContext: String) async throws -> String {
+    func rewriteSelection(
+        selection: String,
+        instruction: String,
+        noteContext: String,
+        inputImages: [AIInputImage] = []
+    ) async throws -> String {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: Self.enabledDefaultsKey) else {
             throw AIWritingError.disabled
@@ -99,8 +110,19 @@ actor AIWritingService {
         }
 
         let contextSnippet = String(noteContext.prefix(2800))
-        let systemPrompt =
-            "You edit user-selected note text. Return only the edited text with no preface, no markdown fence, and no quotes."
+        let systemPrompt = """
+        You edit user-selected note text.
+        Return only the edited content with no preface, no markdown fence, and no quotes.
+        If the instruction asks for visual formatting (for example: bold, italic, underline, strikethrough, headings, bullets, checkboxes, links, font changes, or text color), return an HTML fragment that represents the formatted result.
+        For text color, use inline CSS color styles.
+        If the selected text contains tokens like [[IMAGE_1]], [[IMAGE_2]], keep those tokens exactly as-is and in place.
+        If input images are attached, use them to improve factual edits and content-aware rewrites.
+        If formatting is not requested, return plain text.
+        """
+        let imageTokenHelp = inputImages.isEmpty
+            ? ""
+            : "\nImage token mapping:\n" + inputImages.map { "\($0.token) -> attached image" }
+                .joined(separator: "\n")
         let userPrompt = """
         Instruction:
         \(instruction)
@@ -114,14 +136,27 @@ actor AIWritingService {
         \"\"\"
         \(contextSnippet)
         \"\"\"
+        \(imageTokenHelp)
         """
+
+        var userContent: [[String: Any]] = [
+            ["type": "text", "text": userPrompt]
+        ]
+        for image in inputImages {
+            let base64 = image.data.base64EncodedString()
+            let dataURL = "data:\(image.mimeType);base64,\(base64)"
+            userContent.append([
+                "type": "image_url",
+                "image_url": ["url": dataURL]
+            ])
+        }
 
         let payload: [String: Any] = [
             "model": model,
             "temperature": 0.2,
             "messages": [
                 ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": userPrompt]
+                ["role": "user", "content": userContent]
             ]
         ]
         let bodyData = try JSONSerialization.data(withJSONObject: payload)

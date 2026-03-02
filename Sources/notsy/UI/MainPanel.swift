@@ -92,6 +92,8 @@ struct MainPanel: View {
     @State private var sidebarContentPreviewCache: [UUID: String] = [:]
     @State private var autoExpandedSidebarForSearch = false
     @State private var keyDownMonitor: Any?
+    @State private var manualSaveStatusMessage: String?
+    @State private var manualSaveStatusTask: Task<Void, Never>?
     @State private var zenModeEnabled = false
     @State private var showClearUnpinnedConfirmation = false
     @State private var selectedEditorText = ""
@@ -101,6 +103,7 @@ struct MainPanel: View {
     @State private var aiLastInstruction = ""
     @State private var aiLastSelectionText = ""
     @State private var aiLastSelectionRange: NSRange?
+    @State private var aiLastAttachmentPlaceholders: [EditorAIAttachmentPlaceholder] = []
     @State private var aiTask: Task<Void, Never>?
     @State private var aiIsRunning = false
     @State private var pendingEditorAIAction: EditorAIActionRequest?
@@ -126,6 +129,11 @@ struct MainPanel: View {
     let openLinkEditorPub = NotificationCenter.default.publisher(
         for: NSNotification.Name("NotsyOpenLinkEditor"))
     private let editorFindActionNotification = NSNotification.Name("NotsyEditorFindAction")
+
+    private struct AISelectionPayload {
+        let text: String
+        let placeholders: [EditorAIAttachmentPlaceholder]
+    }
 
     var filteredNotes: [Note] {
         if queryBuffer.isEmpty { return store.notes }
@@ -171,6 +179,22 @@ struct MainPanel: View {
 
     private var persistedSelectedNoteID: UUID? {
         UUID(uuidString: persistedSelectedNoteIDRaw)
+    }
+
+    private var statusBannerMessage: String? {
+        manualSaveStatusMessage ?? store.notionSyncStatusMessage
+    }
+
+    private var statusBannerIconName: String {
+        if manualSaveStatusMessage != nil { return "checkmark.circle.fill" }
+        if store.notionSyncInFlight { return "arrow.triangle.2.circlepath" }
+        if store.notionSyncStatusIsError { return "exclamationmark.triangle.fill" }
+        return "checkmark.circle.fill"
+    }
+
+    private var statusBannerForegroundColor: Color {
+        if manualSaveStatusMessage != nil { return Theme.textMuted.opacity(0.9) }
+        return store.notionSyncStatusIsError ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9)
     }
 
     var body: some View {
@@ -416,25 +440,16 @@ struct MainPanel: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    if let notionMessage = store.notionSyncStatusMessage {
+                    if let statusBannerMessage {
                         HStack(spacing: 8) {
-                            Image(
-                                systemName: store.notionSyncInFlight
-                                    ? "arrow.triangle.2.circlepath"
-                                    : (store.notionSyncStatusIsError
-                                        ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                            )
+                            Image(systemName: statusBannerIconName)
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(
-                                store.notionSyncStatusIsError
-                                    ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
-                            Text(notionMessage)
+                            .foregroundColor(statusBannerForegroundColor)
+                            Text(statusBannerMessage)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .font(.system(size: 11))
-                                .foregroundColor(
-                                    store.notionSyncStatusIsError
-                                        ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9))
+                                .foregroundColor(statusBannerForegroundColor)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
@@ -725,6 +740,7 @@ struct MainPanel: View {
         }
         .onDisappear {
             aiTask?.cancel()
+            manualSaveStatusTask?.cancel()
             if let keyDownMonitor {
                 NSEvent.removeMonitor(keyDownMonitor)
                 self.keyDownMonitor = nil
@@ -835,6 +851,21 @@ struct MainPanel: View {
             }
             return nil
         }
+        // Cmd + S -> explicit save feedback
+        if event.modifierFlags.contains(.command),
+            !event.modifierFlags.contains(.shift),
+            !event.modifierFlags.contains(.option),
+            !event.modifierFlags.contains(.control),
+            event.keyCode == 1
+        {
+            if let selectedNoteID {
+                store.saveNoteChanges(noteID: selectedNoteID)
+                showManualSaveStatus("Saved.")
+            } else {
+                showManualSaveStatus("Nothing selected to save.")
+            }
+            return nil
+        }
         // Cmd + F -> Find inside editor
         if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift)
             && event.keyCode == 3
@@ -915,6 +946,18 @@ struct MainPanel: View {
             }
         }
         return event
+    }
+
+    private func showManualSaveStatus(_ message: String) {
+        manualSaveStatusTask?.cancel()
+        manualSaveStatusMessage = message
+        manualSaveStatusTask = Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                manualSaveStatusMessage = nil
+            }
+        }
     }
 
     private func isSearchInputActive() -> Bool {
@@ -1101,7 +1144,8 @@ struct MainPanel: View {
         pendingEditorAIAction = EditorAIActionRequest(
             kind: .replaceSelection,
             text: aiGeneratedText,
-            targetRange: aiLastSelectionRange
+            targetRange: aiLastSelectionRange,
+            attachmentPlaceholders: aiLastAttachmentPlaceholders
         )
         resetAIOverlay(clearSelection: false, clearPendingAction: false)
         aiPopoverTrigger = nil
@@ -1111,7 +1155,8 @@ struct MainPanel: View {
         pendingEditorAIAction = EditorAIActionRequest(
             kind: .insertBelowSelection,
             text: aiGeneratedText,
-            targetRange: aiLastSelectionRange
+            targetRange: aiLastSelectionRange,
+            attachmentPlaceholders: aiLastAttachmentPlaceholders
         )
         resetAIOverlay(clearSelection: false, clearPendingAction: false)
         aiPopoverTrigger = nil
@@ -1457,7 +1502,8 @@ struct MainPanel: View {
             aiLastInstruction,
             note: note,
             selectionOverride: aiLastSelectionText,
-            rangeOverride: aiLastSelectionRange
+            rangeOverride: aiLastSelectionRange,
+            attachmentPlaceholdersOverride: aiLastAttachmentPlaceholders
         )
     }
 
@@ -1465,20 +1511,30 @@ struct MainPanel: View {
         _ instruction: String,
         note: Note,
         selectionOverride: String? = nil,
-        rangeOverride: NSRange? = nil
+        rangeOverride: NSRange? = nil,
+        attachmentPlaceholdersOverride: [EditorAIAttachmentPlaceholder]? = nil
     ) {
         let fullNoteText = note.plainTextCache
         let fullNoteRange = NSRange(location: 0, length: (fullNoteText as NSString).length)
         let hasSelection = (selectedEditorRange?.length ?? 0) > 0
-        let sourceSelection = selectionOverride ?? (hasSelection ? selectedEditorText : fullNoteText)
-        let trimmedSelection = sourceSelection.trimmingCharacters(in: .whitespacesAndNewlines)
         let sourceRange = rangeOverride ?? (hasSelection ? selectedEditorRange : fullNoteRange)
-        guard !trimmedSelection.isEmpty else {
-            aiErrorMessage = "Note is empty. Add text before using AI."
-            return
-        }
         guard let sourceRange, sourceRange.length > 0 else {
             aiErrorMessage = "Selection changed. Select text again and retry."
+            return
+        }
+
+        let selectionPayload: AISelectionPayload = {
+            if let selectionOverride {
+                let placeholders = attachmentPlaceholdersOverride ?? []
+                return AISelectionPayload(text: selectionOverride, placeholders: placeholders)
+            }
+            return buildAISelectionPayload(note: note, sourceRange: sourceRange)
+        }()
+
+        let sourceSelection = selectionPayload.text
+        let trimmedSelection = sourceSelection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSelection.isEmpty else {
+            aiErrorMessage = "Note is empty. Add text before using AI."
             return
         }
 
@@ -1489,17 +1545,20 @@ struct MainPanel: View {
         aiLastInstruction = instruction
         aiLastSelectionText = sourceSelection
         aiLastSelectionRange = sourceRange
+        aiLastAttachmentPlaceholders = selectionPayload.placeholders
 
         let contextSnapshot = note.plainTextCache
         let selectionSnapshot = sourceSelection
         let instructionSnapshot = instruction
+        let aiVisionImages = aiInputImages(from: selectionPayload.placeholders)
 
         aiTask = Task {
             do {
                 let rewritten = try await AIWritingService.shared.rewriteSelection(
                     selection: selectionSnapshot,
                     instruction: instructionSnapshot,
-                    noteContext: contextSnapshot
+                    noteContext: contextSnapshot,
+                    inputImages: aiVisionImages
                 )
                 try Task.checkCancellation()
                 await MainActor.run {
@@ -1548,6 +1607,7 @@ struct MainPanel: View {
         aiLastInstruction = ""
         aiLastSelectionText = ""
         aiLastSelectionRange = nil
+        aiLastAttachmentPlaceholders = []
         aiCustomPrompt = ""
         aiPopoverTrigger = nil
         if clearPendingAction {
@@ -1556,6 +1616,123 @@ struct MainPanel: View {
         if clearSelection {
             selectedEditorText = ""
             selectedEditorRange = nil
+        }
+    }
+
+    private func buildAISelectionPayload(note: Note, sourceRange: NSRange) -> AISelectionPayload {
+        let attributedNote = note.stringRepresentation
+        let noteLength = attributedNote.length
+        guard sourceRange.location != NSNotFound,
+              sourceRange.location >= 0,
+              sourceRange.length >= 0,
+              sourceRange.location + sourceRange.length <= noteLength else {
+            return AISelectionPayload(text: note.plainTextCache, placeholders: [])
+        }
+
+        let selected = attributedNote.attributedSubstring(from: sourceRange)
+        let mutableText = NSMutableString(string: selected.string)
+        let selectedRange = NSRange(location: 0, length: selected.length)
+        var placeholders: [EditorAIAttachmentPlaceholder] = []
+        var replacementIndex = 1
+        var delta = 0
+
+        selected.enumerateAttribute(.attachment, in: selectedRange, options: []) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            let token = "[[IMAGE_\(replacementIndex)]]"
+            replacementIndex += 1
+
+            let adjusted = NSRange(location: range.location + delta, length: range.length)
+            mutableText.replaceCharacters(in: adjusted, with: token)
+            delta += token.utf16.count - range.length
+
+            let snippet = selected.attributedSubstring(from: range)
+            let exportRange = NSRange(location: 0, length: snippet.length)
+            let data = (try? snippet.data(
+                from: exportRange,
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]
+            )) ?? (try? snippet.data(
+                from: exportRange,
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+            ))
+            let aiImage = aiImagePayload(from: attachment)
+
+            if let data {
+                placeholders.append(
+                    EditorAIAttachmentPlaceholder(
+                        token: token,
+                        attributedData: data,
+                        aiImageData: aiImage?.data,
+                        aiImageMimeType: aiImage?.mimeType
+                    )
+                )
+            }
+        }
+
+        return AISelectionPayload(text: mutableText as String, placeholders: placeholders)
+    }
+
+    private func aiInputImages(
+        from placeholders: [EditorAIAttachmentPlaceholder]
+    ) -> [AIInputImage] {
+        var images: [AIInputImage] = []
+        var seenTokens: Set<String> = []
+        for placeholder in placeholders {
+            guard !seenTokens.contains(placeholder.token) else { continue }
+            guard let data = placeholder.aiImageData,
+                  let mimeType = placeholder.aiImageMimeType else { continue }
+            seenTokens.insert(placeholder.token)
+            images.append(AIInputImage(token: placeholder.token, data: data, mimeType: mimeType))
+        }
+        return images
+    }
+
+    private func aiImagePayload(from attachment: NSTextAttachment) -> (data: Data, mimeType: String)? {
+        if let fileData = attachment.fileWrapper?.regularFileContents,
+           !fileData.isEmpty,
+           fileData.count <= 8_000_000 {
+            let mimeType = mimeTypeForAttachment(attachment) ?? "image/png"
+            return (fileData, mimeType)
+        }
+
+        guard let image = attachment.image
+                ?? attachment.fileWrapper?.regularFileContents.flatMap({ NSImage(data: $0) }),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else {
+            return nil
+        }
+
+        if let jpeg = rep.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.78]
+        ),
+        !jpeg.isEmpty {
+            return (jpeg, "image/jpeg")
+        }
+
+        if let png = rep.representation(using: .png, properties: [:]), !png.isEmpty {
+            return (png, "image/png")
+        }
+        return nil
+    }
+
+    private func mimeTypeForAttachment(_ attachment: NSTextAttachment) -> String? {
+        guard let filename = attachment.fileWrapper?.preferredFilename else { return nil }
+        let ext = (filename as NSString).pathExtension.lowercased()
+        guard !ext.isEmpty else { return nil }
+        if let type = UTType(filenameExtension: ext),
+           let preferred = type.preferredMIMEType {
+            return preferred
+        }
+
+        switch ext {
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
+        case "tif", "tiff": return "image/tiff"
+        case "bmp": return "image/bmp"
+        default: return nil
         }
     }
 

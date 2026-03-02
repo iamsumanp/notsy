@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 class EditorScrollView: NSScrollView {
     override var acceptsFirstResponder: Bool { true }
@@ -53,6 +54,8 @@ class CustomTextView: NSTextView {
     )
     private static let codeLanguageAttribute = NSAttributedString.Key("notsy.code.language")
     private static let codeTokenAttribute = NSAttributedString.Key("notsy.code.token")
+    static let autoDetectedLinkAttribute = NSAttributedString.Key("notsy.link.auto")
+    static let explicitLinkAttribute = NSAttributedString.Key("notsy.link.explicit")
 
     private var isNormalizingAttachments = false
     private var isNormalizingListParagraphStyles = false
@@ -80,6 +83,8 @@ class CustomTextView: NSTextView {
         var attrs = base ?? typingAttributes
         // Never keep a link attribute in typing attrs; otherwise new typed text can inherit link style.
         attrs.removeValue(forKey: .link)
+        attrs.removeValue(forKey: Self.autoDetectedLinkAttribute)
+        attrs.removeValue(forKey: Self.explicitLinkAttribute)
         if forceDefaultColor {
             attrs[.foregroundColor] = Theme.editorTextNSColor
         } else if let color = attrs[.foregroundColor] as? NSColor {
@@ -101,9 +106,13 @@ class CustomTextView: NSTextView {
     private func applyPaste(text: String) {
         let selection = selectedRange()
         let attrs = normalizedTypingAttributes()
-        let insertion = NSAttributedString(string: text, attributes: attrs)
+        let adjustedText = sanitizedListPasteIfNeeded(text, selection: selection)
+        let insertion = NSAttributedString(string: adjustedText, attributes: attrs)
         textStorage?.replaceCharacters(in: selection, with: insertion)
-        applyCodeHighlightingForEditedRange(NSRange(location: selection.location, length: insertion.length), preferredLanguage: detectCodeLanguage(in: text))
+        applyCodeHighlightingForEditedRange(
+            NSRange(location: selection.location, length: insertion.length),
+            preferredLanguage: detectCodeLanguage(in: adjustedText)
+        )
         let cursor = selection.location + insertion.length
         setSelectedRange(NSRange(location: cursor, length: 0))
         typingAttributes = attrs
@@ -113,12 +122,94 @@ class CustomTextView: NSTextView {
     private func applyPaste(attributed attributedText: NSAttributedString) {
         let selection = selectedRange()
         let normalized = normalizePastedAttributedText(attributedText)
-        textStorage?.replaceCharacters(in: selection, with: normalized)
+        let adjusted = sanitizedListPasteIfNeeded(normalized, selection: selection)
+        textStorage?.replaceCharacters(in: selection, with: adjusted)
         applyCodeHighlightingForEditedRange(
-            NSRange(location: selection.location, length: normalized.length),
-            preferredLanguage: detectCodeLanguage(in: normalized.string)
+            NSRange(location: selection.location, length: adjusted.length),
+            preferredLanguage: detectCodeLanguage(in: adjusted.string)
         )
-        let cursor = selection.location + normalized.length
+        let cursor = selection.location + adjusted.length
+        setSelectedRange(NSRange(location: cursor, length: 0))
+        typingAttributes = normalizedTypingAttributes()
+        didChangeText()
+    }
+
+    private func sanitizedListPasteIfNeeded(_ text: String, selection: NSRange) -> String {
+        guard shouldStripLeadingPastedListMarker(at: selection) else { return text }
+        guard let removablePrefixLength = leadingPastedListMarkerPrefixLength(in: text) else { return text }
+        let nsText = text as NSString
+        guard removablePrefixLength > 0, removablePrefixLength <= nsText.length else { return text }
+        return nsText.replacingCharacters(in: NSRange(location: 0, length: removablePrefixLength), with: "")
+    }
+
+    private func sanitizedListPasteIfNeeded(_ attributedText: NSAttributedString, selection: NSRange) -> NSAttributedString {
+        guard shouldStripLeadingPastedListMarker(at: selection) else { return attributedText }
+        guard let removablePrefixLength = leadingPastedListMarkerPrefixLength(in: attributedText.string) else {
+            return attributedText
+        }
+        guard removablePrefixLength > 0, removablePrefixLength <= attributedText.length else { return attributedText }
+        let mutable = NSMutableAttributedString(attributedString: attributedText)
+        mutable.deleteCharacters(in: NSRange(location: 0, length: removablePrefixLength))
+        return mutable
+    }
+
+    private func leadingPastedListMarkerPrefixLength(in text: String) -> Int? {
+        guard !text.isEmpty else { return nil }
+        let firstLine: String
+        if let newlineRange = text.rangeOfCharacter(from: .newlines) {
+            firstLine = String(text[..<newlineRange.lowerBound])
+        } else {
+            firstLine = text
+        }
+
+        let leadingWhitespace = String(firstLine.prefix(while: { $0 == " " || $0 == "\t" }))
+        let trimmedLeading = String(firstLine.dropFirst(leadingWhitespace.count))
+        guard let marker = listMarkerPrefix(in: trimmedLeading) else { return nil }
+        return leadingWhitespace.utf16.count + marker.utf16.count
+    }
+
+    private func shouldStripLeadingPastedListMarker(at selection: NSRange) -> Bool {
+        guard let textStorage else { return false }
+        let text = textStorage.string as NSString
+        guard text.length > 0 else { return false }
+
+        let insertionLocation = max(0, min(selection.location, text.length))
+        if insertionLocation == text.length, text.length > 0 {
+            let previous = text.character(at: text.length - 1)
+            if previous == 10 || previous == 13 { return false }
+        }
+
+        let probeLocation = insertionLocation == text.length ? max(0, text.length - 1) : insertionLocation
+        let lineRange = text.lineRange(for: NSRange(location: probeLocation, length: 0))
+        let lineString = text.substring(with: lineRange)
+        let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
+        let trimmedLeading = String(lineString.dropFirst(leadingWhitespace.count))
+        guard let marker = listMarkerPrefix(in: trimmedLeading) else { return false }
+
+        let markerBoundary = lineRange.location + leadingWhitespace.utf16.count + marker.utf16.count
+        return insertionLocation >= markerBoundary
+    }
+
+    private func applyPaste(image: NSImage) {
+        let selection = selectedRange()
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        if let pngData = pngData(from: image) {
+            let wrapper = FileWrapper(regularFileWithContents: pngData)
+            wrapper.preferredFilename = "image.png"
+            attachment.fileWrapper = wrapper
+        }
+
+        let attributed = NSAttributedString(attachment: attachment)
+        textStorage?.replaceCharacters(in: selection, with: attributed)
+        let attachmentRange = NSRange(location: selection.location, length: attributed.length)
+        applyImageSize(
+            to: attachment,
+            range: attachmentRange,
+            targetWidth: Self.imageThumbnailWidth,
+            preserveExpanded: false
+        )
+        let cursor = selection.location + attributed.length
         setSelectedRange(NSRange(location: cursor, length: 0))
         typingAttributes = normalizedTypingAttributes()
         didChangeText()
@@ -146,13 +237,23 @@ class CustomTextView: NSTextView {
             if attrs[.attachment] == nil {
                 let sourceFont = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: Self.editorFontSize)
                 normalized[.font] = editorDefaultFontPreservingTraits(from: sourceFont)
-                normalized[.foregroundColor] = Theme.editorTextNSColor
+                if let sourceColor = attrs[.foregroundColor] as? NSColor {
+                    normalized[.foregroundColor] = areColorsEquivalent(sourceColor, .systemGreen)
+                        ? Theme.editorTextNSColor
+                        : sourceColor
+                } else {
+                    normalized[.foregroundColor] = Theme.editorTextNSColor
+                }
             }
 
             let paragraph = ((attrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle)
                 ?? NSMutableParagraphStyle()
             paragraph.lineSpacing = 4
             normalized[.paragraphStyle] = paragraph
+            if normalized[.link] != nil {
+                normalized[Self.explicitLinkAttribute] = true
+                normalized.removeValue(forKey: Self.autoDetectedLinkAttribute)
+            }
 
             mutable.setAttributes(normalized, range: range)
         }
@@ -247,7 +348,50 @@ class CustomTextView: NSTextView {
         return false
     }
 
+    private func pastedImageFromPasteboard(_ pasteboard: NSPasteboard) -> NSImage? {
+        if let image = pasteboard.readObjects(forClasses: [NSImage.self], options: nil)?.first as? NSImage {
+            return image
+        }
+
+        if let data = pasteboard.data(forType: .png), let image = NSImage(data: data) {
+            return image
+        }
+        if let data = pasteboard.data(forType: .tiff), let image = NSImage(data: data) {
+            return image
+        }
+
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] {
+            for url in urls where url.isFileURL && isImageFileURL(url) {
+                if let image = NSImage(contentsOf: url) {
+                    return image
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func isImageFileURL(_ url: URL) -> Bool {
+        let extensionLowercased = url.pathExtension.lowercased()
+        if let type = UTType(filenameExtension: extensionLowercased) {
+            return type.conforms(to: .image)
+        }
+        return ["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "heic", "webp"].contains(
+            extensionLowercased
+        )
+    }
+
+    private func pngData(from image: NSImage) -> Data? {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
     override func paste(_ sender: Any?) {
+        if let pastedImage = pastedImageFromPasteboard(NSPasteboard.general) {
+            applyPaste(image: pastedImage)
+            return
+        }
         if let attributed = NSPasteboard.general.readObjects(forClasses: [NSAttributedString.self], options: nil)?.first as? NSAttributedString,
            attributed.length > 0 {
             applyPaste(attributed: attributed)
@@ -731,16 +875,36 @@ class CustomTextView: NSTextView {
     func refreshDetectedLinks() {
         guard let textStorage else { return }
         let fullRange = NSRange(location: 0, length: textStorage.length)
+        guard fullRange.length > 0 else { return }
+
+        textStorage.enumerateAttribute(Self.autoDetectedLinkAttribute, in: fullRange, options: []) { value, range, _ in
+            guard let isAuto = value as? Bool, isAuto else { return }
+            textStorage.removeAttribute(.link, range: range)
+            textStorage.removeAttribute(Self.autoDetectedLinkAttribute, range: range)
+        }
 
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return }
         let text = textStorage.string
         detector.enumerateMatches(in: text, options: [], range: fullRange) { match, _, _ in
             guard let match, let url = match.url else { return }
-            // Preserve custom anchor links; only auto-apply where no link exists yet.
+            guard match.range.location < textStorage.length else { return }
+
+            // Preserve manually created links and only manage auto-detected ones.
+            let isExplicit = (textStorage.attribute(
+                Self.explicitLinkAttribute,
+                at: match.range.location,
+                effectiveRange: nil
+            ) as? Bool) == true
             let hasLink = textStorage.attribute(.link, at: match.range.location, effectiveRange: nil) != nil
-            if !hasLink {
-                textStorage.addAttribute(.link, value: url, range: match.range)
-            }
+            if isExplicit || hasLink { return }
+
+            textStorage.addAttributes(
+                [
+                    .link: url,
+                    Self.autoDetectedLinkAttribute: true
+                ],
+                range: match.range
+            )
         }
     }
 
@@ -957,17 +1121,44 @@ enum EditorAIActionKind: Equatable {
     case insertBelowSelection
 }
 
+struct EditorAIAttachmentPlaceholder: Equatable {
+    let token: String
+    let attributedData: Data
+    let aiImageData: Data?
+    let aiImageMimeType: String?
+
+    init(
+        token: String,
+        attributedData: Data,
+        aiImageData: Data? = nil,
+        aiImageMimeType: String? = nil
+    ) {
+        self.token = token
+        self.attributedData = attributedData
+        self.aiImageData = aiImageData
+        self.aiImageMimeType = aiImageMimeType
+    }
+}
+
 struct EditorAIActionRequest: Equatable {
     let id: UUID
     let kind: EditorAIActionKind
     let text: String
     let targetRange: NSRange?
+    let attachmentPlaceholders: [EditorAIAttachmentPlaceholder]
 
-    init(id: UUID = UUID(), kind: EditorAIActionKind, text: String, targetRange: NSRange? = nil) {
+    init(
+        id: UUID = UUID(),
+        kind: EditorAIActionKind,
+        text: String,
+        targetRange: NSRange? = nil,
+        attachmentPlaceholders: [EditorAIAttachmentPlaceholder] = []
+    ) {
         self.id = id
         self.kind = kind
         self.text = text
         self.targetRange = targetRange
+        self.attachmentPlaceholders = attachmentPlaceholders
     }
 }
 
@@ -1026,6 +1217,7 @@ struct RichTextEditorView: NSViewRepresentable {
         scrollView.drawsBackground = false
 
         context.coordinator.textView = textView
+        context.coordinator.scrollView = scrollView
         textView.delegate = context.coordinator
         textView.textStorage?.setAttributedString(note.stringRepresentation)
         textView.normalizeListParagraphStylesIfNeeded()
@@ -1055,6 +1247,9 @@ struct RichTextEditorView: NSViewRepresentable {
 
         if context.coordinator.currentNoteID != note.id {
             context.coordinator.isUpdating = true
+            if let previousNoteID = context.coordinator.currentNoteID {
+                context.coordinator.captureViewportState(for: previousNoteID, in: textView)
+            }
             context.coordinator.currentNoteID = note.id
 
             textView.textStorage?.setAttributedString(note.stringRepresentation)
@@ -1064,8 +1259,7 @@ struct RichTextEditorView: NSViewRepresentable {
                 customTextView.normalizeImageAttachmentsIfNeeded()
             }
 
-            let length = textView.textStorage?.length ?? 0
-            textView.setSelectedRange(NSRange(location: length, length: 0))
+            context.coordinator.restoreViewportState(for: note.id, in: textView)
             if let customTextView = textView as? CustomTextView {
                 customTextView.resetTypingAttributesForCurrentSelection()
             }
@@ -1090,10 +1284,16 @@ struct RichTextEditorView: NSViewRepresentable {
         var isUpdating = false
         var lastHandledAIActionID: UUID?
         weak var textView: NSTextView?
+        weak var scrollView: NSScrollView?
         var lastAppliedEditorTextColor: NSColor = Theme.editorTextNSColor
         private var findQuery: String = ""
         private var findMatches: [NSRange] = []
         private var currentFindIndex: Int = -1
+        private struct EditorViewportState {
+            let selectedRange: NSRange
+            let verticalOffset: CGFloat
+        }
+        private var noteViewportState: [UUID: EditorViewportState] = [:]
 
         init(_ parent: RichTextEditorView) { 
             self.parent = parent 
@@ -1314,20 +1514,32 @@ struct RichTextEditorView: NSViewRepresentable {
                     let attrs: [NSAttributedString.Key: Any] = [
                         .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize),
                         .foregroundColor: (textView.typingAttributes[.foregroundColor] as? NSColor) ?? Theme.editorTextNSColor,
-                        .link: normalizedURL
+                        .link: normalizedURL,
+                        CustomTextView.explicitLinkAttribute: true
                     ]
                     let attributed = NSAttributedString(string: trimmedText, attributes: attrs)
                     textView.textStorage?.replaceCharacters(in: selected, with: attributed)
                     textView.setSelectedRange(NSRange(location: selected.location + trimmedText.utf16.count, length: 0))
                 } else {
-                    textView.textStorage?.addAttribute(.link, value: normalizedURL, range: selected)
+                    textView.textStorage?.addAttributes(
+                        [
+                            .link: normalizedURL,
+                            CustomTextView.explicitLinkAttribute: true
+                        ],
+                        range: selected
+                    )
+                    textView.textStorage?.removeAttribute(
+                        CustomTextView.autoDetectedLinkAttribute,
+                        range: selected
+                    )
                 }
             } else {
                 let anchor = trimmedText.isEmpty ? anchorText(from: normalizedURL) : trimmedText
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: (textView.typingAttributes[.font] as? NSFont) ?? NSFont.systemFont(ofSize: CustomTextView.editorFontSize),
                     .foregroundColor: (textView.typingAttributes[.foregroundColor] as? NSColor) ?? Theme.editorTextNSColor,
-                    .link: normalizedURL
+                    .link: normalizedURL,
+                    CustomTextView.explicitLinkAttribute: true
                 ]
                 let attributed = NSAttributedString(string: anchor, attributes: attrs)
                 textView.textStorage?.replaceCharacters(in: selected, with: attributed)
@@ -1586,9 +1798,19 @@ struct RichTextEditorView: NSViewRepresentable {
             textView.window?.makeFirstResponder(textView)
             switch action.kind {
             case .replaceSelection:
-                replaceSelection(in: textView, with: action.text, preferredRange: action.targetRange)
+                replaceSelection(
+                    in: textView,
+                    with: action.text,
+                    preferredRange: action.targetRange,
+                    attachmentPlaceholders: action.attachmentPlaceholders
+                )
             case .insertBelowSelection:
-                insertBelowSelection(in: textView, value: action.text, preferredRange: action.targetRange)
+                insertBelowSelection(
+                    in: textView,
+                    value: action.text,
+                    preferredRange: action.targetRange,
+                    attachmentPlaceholders: action.attachmentPlaceholders
+                )
             }
             saveState()
             updateSelectionText(for: textView)
@@ -1615,7 +1837,12 @@ struct RichTextEditorView: NSViewRepresentable {
             }
         }
 
-        private func replaceSelection(in textView: NSTextView, with value: String, preferredRange: NSRange?) {
+        private func replaceSelection(
+            in textView: NSTextView,
+            with value: String,
+            preferredRange: NSRange?,
+            attachmentPlaceholders: [EditorAIAttachmentPlaceholder]
+        ) {
             let fallback = textView.selectedRange()
             let selection: NSRange
             if let preferredRange,
@@ -1627,7 +1854,22 @@ struct RichTextEditorView: NSViewRepresentable {
                 selection = fallback
             }
             guard selection.length > 0 else { return }
-            let attributed = attributedText(from: value, textView: textView)
+            let attributed = attributedText(
+                from: value,
+                textView: textView,
+                attachmentPlaceholders: attachmentPlaceholders
+            )
+            if applyNonDestructiveColorUpdateIfPossible(
+                in: textView,
+                selection: selection,
+                replacement: attributed
+            ) {
+                textView.setSelectedRange(NSRange(location: selection.location + selection.length, length: 0))
+                if let customTextView = textView as? CustomTextView {
+                    customTextView.resetTypingAttributesForCurrentSelection()
+                }
+                return
+            }
             applyTextEdit(in: textView, range: selection, replacement: attributed)
             let cursor = selection.location + attributed.length
             textView.setSelectedRange(NSRange(location: cursor, length: 0))
@@ -1636,7 +1878,12 @@ struct RichTextEditorView: NSViewRepresentable {
             }
         }
 
-        private func insertBelowSelection(in textView: NSTextView, value: String, preferredRange: NSRange?) {
+        private func insertBelowSelection(
+            in textView: NSTextView,
+            value: String,
+            preferredRange: NSRange?,
+            attachmentPlaceholders: [EditorAIAttachmentPlaceholder]
+        ) {
             let nsText = textView.string as NSString
             let fallback = textView.selectedRange()
             let selection: NSRange
@@ -1662,7 +1909,11 @@ struct RichTextEditorView: NSViewRepresentable {
                 }
             }
 
-            let attributed = attributedText(from: insertionText, textView: textView)
+            let attributed = attributedText(
+                from: insertionText,
+                textView: textView,
+                attachmentPlaceholders: attachmentPlaceholders
+            )
             applyTextEdit(
                 in: textView,
                 range: NSRange(location: insertionLocation, length: 0),
@@ -1693,17 +1944,284 @@ struct RichTextEditorView: NSViewRepresentable {
             textView.didChangeText()
         }
 
-        private func attributedText(from value: String, textView: NSTextView) -> NSAttributedString {
-            let attrs = (textView.typingAttributes[.font] as? NSFont) == nil
-                ? [
-                    NSAttributedString.Key.font: NSFont.monospacedSystemFont(
-                        ofSize: CustomTextView.editorFontSize,
-                        weight: .regular
-                    ),
-                    NSAttributedString.Key.foregroundColor: Theme.editorTextNSColor
-                ]
-                : textView.typingAttributes
+        private func attributedText(
+            from value: String,
+            textView: NSTextView,
+            attachmentPlaceholders: [EditorAIAttachmentPlaceholder]
+        ) -> NSAttributedString {
+            if let richText = attributedHTMLText(
+                from: value,
+                textView: textView,
+                attachmentPlaceholders: attachmentPlaceholders
+            ) {
+                return richText
+            }
+            if !attachmentPlaceholders.isEmpty {
+                let mutable = NSMutableAttributedString(
+                    string: value,
+                    attributes: defaultTypingAttributes(for: textView)
+                )
+                injectAttachmentPlaceholders(
+                    into: mutable,
+                    placeholders: attachmentPlaceholders
+                )
+                return mutable
+            }
+            let attrs = defaultTypingAttributes(for: textView)
             return NSAttributedString(string: value, attributes: attrs)
+        }
+
+        private func defaultTypingAttributes(for textView: NSTextView) -> [NSAttributedString.Key: Any] {
+            if let _ = textView.typingAttributes[.font] as? NSFont {
+                var attrs = textView.typingAttributes
+                attrs.removeValue(forKey: .link)
+                attrs.removeValue(forKey: CustomTextView.explicitLinkAttribute)
+                return attrs
+            }
+            return [
+                .font: NSFont.monospacedSystemFont(
+                    ofSize: CustomTextView.editorFontSize,
+                    weight: .regular
+                ),
+                .foregroundColor: Theme.editorTextNSColor
+            ]
+        }
+
+        private func attributedHTMLText(
+            from value: String,
+            textView: NSTextView,
+            attachmentPlaceholders: [EditorAIAttachmentPlaceholder]
+        ) -> NSAttributedString? {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard containsHTMLMarkup(trimmed) else { return nil }
+            guard let data = trimmed.data(using: .utf8) else { return nil }
+
+            let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+                .documentType: NSAttributedString.DocumentType.html,
+                .characterEncoding: String.Encoding.utf8.rawValue
+            ]
+            guard let parsed = try? NSMutableAttributedString(
+                data: data,
+                options: options,
+                documentAttributes: nil
+            ),
+            parsed.length > 0 else {
+                return fallbackSimpleColorHTML(
+                    from: trimmed,
+                    textView: textView,
+                    attachmentPlaceholders: attachmentPlaceholders
+                )
+            }
+
+            normalizeAIAttributedText(parsed, textView: textView)
+            injectAttachmentPlaceholders(into: parsed, placeholders: attachmentPlaceholders)
+            return parsed
+        }
+
+        private func containsHTMLMarkup(_ value: String) -> Bool {
+            guard value.contains("<"), value.contains(">") else { return false }
+            return value.range(of: #"<\s*/?\s*[a-zA-Z][^>]*>"#, options: .regularExpression) != nil
+        }
+
+        private func fallbackSimpleColorHTML(
+            from html: String,
+            textView: NSTextView,
+            attachmentPlaceholders: [EditorAIAttachmentPlaceholder]
+        ) -> NSAttributedString? {
+            let plain = html.replacingOccurrences(
+                of: #"<[^>]+>"#,
+                with: "",
+                options: .regularExpression
+            )
+            guard !plain.isEmpty else { return nil }
+
+            let mutable = NSMutableAttributedString(
+                string: plain,
+                attributes: defaultTypingAttributes(for: textView)
+            )
+            if let color = cssColor(from: html) {
+                mutable.addAttribute(
+                    .foregroundColor,
+                    value: color,
+                    range: NSRange(location: 0, length: mutable.length)
+                )
+            }
+            injectAttachmentPlaceholders(into: mutable, placeholders: attachmentPlaceholders)
+            return mutable
+        }
+
+        private func cssColor(from html: String) -> NSColor? {
+            guard let match = html.range(
+                of: #"(?i)color\s*:\s*([^;\"'>]+)"#,
+                options: .regularExpression
+            ) else { return nil }
+            let fragment = String(html[match])
+            guard let valueRange = fragment.range(
+                of: #"(?i)color\s*:\s*"#,
+                options: .regularExpression
+            ) else { return nil }
+            let raw = fragment[valueRange.upperBound...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+
+            if raw == "red" { return .systemRed }
+            if raw == "green" { return .systemGreen }
+            if raw == "blue" { return .systemBlue }
+            if raw == "yellow" { return .systemYellow }
+            if raw == "white" { return .white }
+            if raw == "black" { return .black }
+
+            let hex = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
+            guard hex.count == 6, let rgb = Int(hex, radix: 16) else { return nil }
+            let red = CGFloat((rgb >> 16) & 0xFF) / 255.0
+            let green = CGFloat((rgb >> 8) & 0xFF) / 255.0
+            let blue = CGFloat(rgb & 0xFF) / 255.0
+            return NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1)
+        }
+
+        private func normalizeAIAttributedText(_ attributed: NSMutableAttributedString, textView: NSTextView) {
+            let fullRange = NSRange(location: 0, length: attributed.length)
+            guard fullRange.length > 0 else { return }
+
+            let baseAttributes = defaultTypingAttributes(for: textView)
+            let baseColor = (baseAttributes[.foregroundColor] as? NSColor) ?? Theme.editorTextNSColor
+            let baseFont = (baseAttributes[.font] as? NSFont) ?? NSFont.monospacedSystemFont(
+                ofSize: CustomTextView.editorFontSize,
+                weight: .regular
+            )
+
+            attributed.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
+                var normalized = attrs
+                normalized.removeValue(forKey: .backgroundColor)
+                if let sourceFont = normalized[.font] as? NSFont {
+                    normalized[.font] = normalizedEditorFont(from: sourceFont, base: baseFont)
+                } else {
+                    normalized[.font] = baseFont
+                }
+                if normalized[.foregroundColor] == nil {
+                    normalized[.foregroundColor] = baseColor
+                }
+
+                let paragraph = ((normalized[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
+                    as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                paragraph.lineSpacing = 4
+                normalized[.paragraphStyle] = paragraph
+
+                if normalized[.link] != nil {
+                    normalized[CustomTextView.explicitLinkAttribute] = true
+                }
+
+                attributed.setAttributes(normalized, range: range)
+            }
+        }
+
+        private func normalizedEditorFont(from source: NSFont, base: NSFont) -> NSFont {
+            let fontManager = NSFontManager.shared
+            var result = NSFont(descriptor: base.fontDescriptor, size: base.pointSize) ?? base
+            let traits = source.fontDescriptor.symbolicTraits
+
+            if traits.contains(.bold),
+               let converted = fontManager.convert(result, toHaveTrait: .boldFontMask) as NSFont? {
+                result = converted
+            }
+            if traits.contains(.italic),
+               let converted = fontManager.convert(result, toHaveTrait: .italicFontMask) as NSFont? {
+                result = converted
+            }
+
+            return result
+        }
+
+        private func injectAttachmentPlaceholders(
+            into attributed: NSMutableAttributedString,
+            placeholders: [EditorAIAttachmentPlaceholder]
+        ) {
+            guard !placeholders.isEmpty else { return }
+            for placeholder in placeholders {
+                while true {
+                    let full = NSRange(location: 0, length: attributed.length)
+                    let tokenRange = (attributed.string as NSString).range(of: placeholder.token, options: [], range: full)
+                    if tokenRange.location == NSNotFound { break }
+
+                    guard let replacement = attributedStringFromAttachmentData(placeholder.attributedData) else {
+                        break
+                    }
+                    attributed.replaceCharacters(in: tokenRange, with: replacement)
+                }
+            }
+        }
+
+        private func attributedStringFromAttachmentData(_ data: Data) -> NSAttributedString? {
+            let rtfdOptions: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+                .documentType: NSAttributedString.DocumentType.rtfd
+            ]
+            if let attr = try? NSAttributedString(
+                data: data,
+                options: rtfdOptions,
+                documentAttributes: nil
+            ) {
+                return attr
+            }
+
+            let rtfOptions: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+                .documentType: NSAttributedString.DocumentType.rtf
+            ]
+            return try? NSAttributedString(
+                data: data,
+                options: rtfOptions,
+                documentAttributes: nil
+            )
+        }
+
+        private func applyNonDestructiveColorUpdateIfPossible(
+            in textView: NSTextView,
+            selection: NSRange,
+            replacement: NSAttributedString
+        ) -> Bool {
+            guard let textStorage = textView.textStorage else { return false }
+            guard selection.location + selection.length <= textStorage.length else { return false }
+
+            let existing = textStorage.attributedSubstring(from: selection)
+            guard normalizedComparableText(existing.string) == normalizedComparableText(replacement.string) else {
+                return false
+            }
+
+            let baseExistingColor = (existing.attribute(.foregroundColor, at: 0, effectiveRange: nil)
+                as? NSColor) ?? Theme.editorTextNSColor
+            var hasColorInstruction = false
+            replacement.enumerateAttribute(
+                .foregroundColor,
+                in: NSRange(location: 0, length: replacement.length),
+                options: []
+            ) { value, range, _ in
+                guard let color = value as? NSColor else { return }
+                if areColorsEquivalent(color, baseExistingColor) {
+                    return
+                }
+                hasColorInstruction = true
+                let target = NSRange(location: selection.location + range.location, length: range.length)
+                textStorage.addAttribute(.foregroundColor, value: color, range: target)
+            }
+
+            guard hasColorInstruction else { return false }
+            textView.didChangeText()
+            return true
+        }
+
+        private func normalizedComparableText(_ value: String) -> String {
+            value
+                .replacingOccurrences(of: "\u{00A0}", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        private func areColorsEquivalent(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+            guard let l = lhs.usingColorSpace(.deviceRGB),
+                  let r = rhs.usingColorSpace(.deviceRGB) else { return false }
+            let tolerance: CGFloat = 0.02
+            return abs(l.redComponent - r.redComponent) <= tolerance
+                && abs(l.greenComponent - r.greenComponent) <= tolerance
+                && abs(l.blueComponent - r.blueComponent) <= tolerance
+                && abs(l.alphaComponent - r.alphaComponent) <= tolerance
         }
         
         func saveState() {
@@ -1712,6 +2230,42 @@ struct RichTextEditorView: NSViewRepresentable {
             updateSelectionText(for: textView)
             parent.note.update(with: textView.attributedString())
             parent.store.saveNoteChanges(noteID: parent.note.id)
+            if let noteID = currentNoteID {
+                captureViewportState(for: noteID, in: textView)
+            }
+        }
+
+        func captureViewportState(for noteID: UUID, in textView: NSTextView) {
+            let verticalOffset = scrollView?.contentView.bounds.origin.y ?? 0
+            noteViewportState[noteID] = EditorViewportState(
+                selectedRange: textView.selectedRange(),
+                verticalOffset: verticalOffset
+            )
+        }
+
+        func restoreViewportState(for noteID: UUID, in textView: NSTextView) {
+            let length = textView.textStorage?.length ?? 0
+            if let saved = noteViewportState[noteID], saved.selectedRange.location != NSNotFound {
+                let clampedLocation = min(max(0, saved.selectedRange.location), length)
+                let maxLength = max(0, length - clampedLocation)
+                let clampedLength = min(saved.selectedRange.length, maxLength)
+                let restoredRange = NSRange(location: clampedLocation, length: clampedLength)
+                textView.setSelectedRange(restoredRange)
+
+                if let scrollView {
+                    let clip = scrollView.contentView
+                    let maxY = max(0, textView.bounds.height - clip.bounds.height)
+                    let targetY = min(max(0, saved.verticalOffset), maxY)
+                    clip.scroll(to: NSPoint(x: 0, y: targetY))
+                    scrollView.reflectScrolledClipView(clip)
+                } else {
+                    textView.scrollRangeToVisible(restoredRange)
+                }
+
+                return
+            }
+
+            textView.setSelectedRange(NSRange(location: length, length: 0))
         }
         
         func toggleList(isCheckbox: Bool) {
@@ -1868,6 +2422,9 @@ struct RichTextEditorView: NSViewRepresentable {
             if !didAutoUpdateTitle {
                 parent.store.saveNoteChanges(noteID: parent.note.id)
             }
+            if let noteID = currentNoteID {
+                captureViewportState(for: noteID, in: textView)
+            }
         }
 
         private func contentBasedTitle(from text: String) -> String {
@@ -1919,6 +2476,9 @@ struct RichTextEditorView: NSViewRepresentable {
             }
             updateFormattingState(for: textView)
             updateSelectionText(for: textView)
+            if let noteID = currentNoteID {
+                captureViewportState(for: noteID, in: textView)
+            }
         }
         
         func updateFormattingState(for textView: NSTextView) {
