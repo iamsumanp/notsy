@@ -24,6 +24,9 @@ class CustomTextView: NSTextView {
     private static let resizeHandleVisualSize: CGFloat = 12
     private static let resizeHandleHitPadding: CGFloat = 4
     private static let resizeDragThreshold: CGFloat = 5
+    private static let tableAddButtonSize: CGFloat = 20
+    private static let tableRowResizeHitHeight: CGFloat = 4
+    private static let minTableRowHeight: CGFloat = 18
     private static let diagonalResizeCursor: NSCursor = {
         if let symbol = NSImage(
             systemSymbolName: "arrow.up.left.and.arrow.down.right.circle.fill",
@@ -76,6 +79,7 @@ class CustomTextView: NSTextView {
 
     private var isNormalizingAttachments = false
     private var isNormalizingListParagraphStyles = false
+    private var isNormalizingTableStructure = false
     private var pendingEditedRange: NSRange?
     private var imageTrackingArea: NSTrackingArea?
     private var hoveredAttachmentIndex: Int?
@@ -85,6 +89,10 @@ class CustomTextView: NSTextView {
     private var resizeStartAttachmentRect: NSRect = .zero
     private var resizeAspectRatio: CGFloat = 1
     private var didBeginResizeDrag = false
+    private var hoveredTableAddButtonRect: NSRect?
+    private var hoveredTableForAddButton: NSTextTable?
+    private var hoveredTableRowResizeTarget: TableRowResizeTarget?
+    private var tableRowResizeSession: TableRowResizeSession?
 
     private enum DetectedCodeLanguage: String {
         case swift
@@ -322,12 +330,12 @@ class CustomTextView: NSTextView {
         }
 
         let selection = selectedRange()
-        let probeLocation: Int
-        if selection.location > 0 {
-            probeLocation = selection.location - 1
-        } else {
-            probeLocation = selection.location
-        }
+        let useCurrentLocation = selection.length == 0
+            && selection.location < textStorage.length
+            && tableCursorLocation(at: selection.location) != nil
+        let probeLocation = useCurrentLocation
+            ? selection.location
+            : (selection.location > 0 ? selection.location - 1 : selection.location)
         let cursor = max(0, min(probeLocation, textStorage.length - 1))
         let attrs = textStorage.attributes(at: cursor, effectiveRange: nil)
         typingAttributes = normalizedTypingAttributes(base: attrs)
@@ -453,6 +461,18 @@ class CustomTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 48, handleTableTabNavigation(outdent: event.modifierFlags.contains(.shift)) {
+            return
+        }
+        if event.keyCode == 36, handleTableEnterInCell() {
+            return
+        }
+        if event.keyCode == 51, handleTableBoundaryDelete(backward: true) {
+            return
+        }
+        if event.keyCode == 117, handleTableBoundaryDelete(backward: false) {
+            return
+        }
         // Make list indent/outdent deterministic for Tab/Shift+Tab regardless of command routing.
         if event.keyCode == 48, handleListTab(outdent: event.modifierFlags.contains(.shift)) {
             return
@@ -464,9 +484,428 @@ class CustomTextView: NSTextView {
         super.keyDown(with: event)
     }
 
+    private func handleTableEnterInCell() -> Bool {
+        guard let textStorage, textStorage.length > 0 else { return false }
+        let selected = selectedRange()
+        let probeLocation = min(max(0, selected.location), textStorage.length - 1)
+        guard tableCursorLocation(at: probeLocation) != nil else { return false }
+
+        // Keep Enter inside the same table cell.
+        insertText("\u{2028}", replacementRange: selected)
+        return true
+    }
+
+    private struct TableCursorLocation {
+        let table: NSTextTable
+        let tableBlock: NSTextTableBlock
+        let row: Int
+        let column: Int
+        let paragraphRange: NSRange
+    }
+
+    private struct TableRowResizeTarget {
+        let table: NSTextTable
+        let row: Int
+        let hitRect: NSRect
+    }
+
+    private struct TableRowResizeSession {
+        let table: NSTextTable
+        let row: Int
+        let startPoint: NSPoint
+        let initialMinimumLineHeight: CGFloat
+    }
+
+    private struct TableNormalizationParagraph {
+        let table: NSTextTable
+        let tableBlock: NSTextTableBlock
+        let row: Int
+        let column: Int
+        let paragraphRange: NSRange
+        let value: String
+        let minimumLineHeight: CGFloat?
+    }
+
+    private struct TableNormalizationGroup {
+        let table: NSTextTable
+        var paragraphs: [TableNormalizationParagraph]
+        var tableRange: NSRange
+    }
+
+    private struct TableNormalizationReplacement {
+        let range: NSRange
+        let attributed: NSAttributedString
+        let preferredCaretLocation: Int?
+    }
+
+    private func handleTableTabNavigation(outdent: Bool) -> Bool {
+        let selected = selectedRange()
+        guard selected.length == 0 else { return false }
+        guard let textStorage, textStorage.length > 0 else { return false }
+
+        let probeLocation: Int
+        if selected.location >= textStorage.length {
+            probeLocation = max(0, textStorage.length - 1)
+        } else {
+            probeLocation = max(0, selected.location)
+        }
+
+        guard let current = tableCursorLocation(at: probeLocation) else { return false }
+        let cells = tableCursorLocations(for: current.table)
+        guard !cells.isEmpty else { return true }
+
+        let currentIndex = cells.firstIndex(where: {
+            $0.row == current.row
+                && $0.column == current.column
+                && $0.paragraphRange.location == current.paragraphRange.location
+        }) ?? cells.firstIndex(where: { NSLocationInRange(probeLocation, $0.paragraphRange) })
+
+        guard let index = currentIndex else { return true }
+        if !outdent, index == cells.count - 1 {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotsyToolbarAction"),
+                object: nil,
+                userInfo: ["action": "table-row-add"]
+            )
+            return true
+        }
+        let targetIndex: Int
+        if outdent {
+            targetIndex = index == 0 ? cells.count - 1 : index - 1
+        } else {
+            targetIndex = (index + 1) % cells.count
+        }
+
+        let target = cells[targetIndex]
+        setSelectedRange(NSRange(location: target.paragraphRange.location, length: 0))
+        scrollRangeToVisible(target.paragraphRange)
+        return true
+    }
+
+    private func handleTableBoundaryDelete(backward: Bool) -> Bool {
+        let selected = selectedRange()
+        guard selected.length == 0 else { return false }
+        guard let textStorage, textStorage.length > 0 else { return false }
+
+        let caret = max(0, min(selected.location, textStorage.length))
+        if backward, caret == 0 { return false }
+        if !backward, caret >= textStorage.length { return false }
+
+        let probeLocation = min(max(0, caret), textStorage.length - 1)
+        guard let current = tableCursorLocation(at: probeLocation) else { return false }
+
+        let cellStart = current.paragraphRange.location
+        let cellEnd = max(cellStart, NSMaxRange(current.paragraphRange) - 1)
+        let isBoundaryDelete = backward ? (caret == cellStart) : (caret >= cellEnd)
+        guard isBoundaryDelete else { return false }
+
+        let cells = tableCursorLocations(for: current.table)
+        guard !cells.isEmpty else { return true }
+        let currentIndex = cells.firstIndex(where: {
+            $0.row == current.row
+                && $0.column == current.column
+                && $0.paragraphRange.location == current.paragraphRange.location
+        }) ?? cells.firstIndex(where: { NSLocationInRange(probeLocation, $0.paragraphRange) })
+
+        guard let index = currentIndex else { return true }
+        let targetIndex: Int?
+        if backward {
+            targetIndex = index > 0 ? index - 1 : nil
+        } else {
+            targetIndex = index < cells.count - 1 ? index + 1 : nil
+        }
+
+        if let targetIndex {
+            let target = cells[targetIndex]
+            setSelectedRange(NSRange(location: target.paragraphRange.location, length: 0))
+            scrollRangeToVisible(target.paragraphRange)
+        }
+        return true
+    }
+
+    private func tableCursorLocation(at location: Int) -> TableCursorLocation? {
+        guard let textStorage, textStorage.length > 0 else { return nil }
+        let text = textStorage.string as NSString
+        let safeLocation = max(0, min(location, textStorage.length - 1))
+        let paragraphRange = text.paragraphRange(for: NSRange(location: safeLocation, length: 0))
+        let styleLocation = min(paragraphRange.location, textStorage.length - 1)
+        guard let paragraph = textStorage.attribute(
+            .paragraphStyle,
+            at: styleLocation,
+            effectiveRange: nil
+        ) as? NSParagraphStyle,
+            let tableBlock = paragraph.textBlocks.first(where: { $0 is NSTextTableBlock }) as? NSTextTableBlock
+        else {
+            return nil
+        }
+        return TableCursorLocation(
+            table: tableBlock.table,
+            tableBlock: tableBlock,
+            row: tableBlock.startingRow,
+            column: tableBlock.startingColumn,
+            paragraphRange: paragraphRange
+        )
+    }
+
+    private func tableCursorLocations(for table: NSTextTable) -> [TableCursorLocation] {
+        guard let textStorage, textStorage.length > 0 else { return [] }
+        let text = textStorage.string as NSString
+        var locations: [TableCursorLocation] = []
+        var paragraphLocation = 0
+
+        while paragraphLocation < text.length {
+            let paragraphRange = text.paragraphRange(for: NSRange(location: paragraphLocation, length: 0))
+            let styleLocation = min(paragraphRange.location, max(0, textStorage.length - 1))
+            if let paragraph = textStorage.attribute(.paragraphStyle, at: styleLocation, effectiveRange: nil)
+                as? NSParagraphStyle,
+                let tableBlock = paragraph.textBlocks.first(where: { $0 is NSTextTableBlock }) as? NSTextTableBlock,
+                tableBlock.table === table {
+                locations.append(
+                    TableCursorLocation(
+                        table: table,
+                        tableBlock: tableBlock,
+                        row: tableBlock.startingRow,
+                        column: tableBlock.startingColumn,
+                        paragraphRange: paragraphRange
+                    )
+                )
+            }
+            paragraphLocation = NSMaxRange(paragraphRange)
+        }
+
+        return locations.sorted {
+            if $0.row != $1.row { return $0.row < $1.row }
+            if $0.column != $1.column { return $0.column < $1.column }
+            return $0.paragraphRange.location < $1.paragraphRange.location
+        }
+    }
+
+    private func tableCellRect(for cell: TableCursorLocation) -> NSRect? {
+        guard let layoutManager, let textContainer else { return nil }
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: cell.paragraphRange, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        if rect.isEmpty {
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: cell.paragraphRange.location)
+            rect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+        }
+        rect.origin.x += textContainerInset.width
+        rect.origin.y += textContainerInset.height
+        return rect
+    }
+
+    private func tableRect(for table: NSTextTable) -> NSRect? {
+        let cells = tableCursorLocations(for: table)
+        guard !cells.isEmpty else { return nil }
+        var frame: NSRect?
+        for cell in cells {
+            guard let rect = tableCellRect(for: cell) else { continue }
+            frame = frame == nil ? rect : frame!.union(rect)
+        }
+        return frame
+    }
+
+    private func tableCell(at point: NSPoint) -> TableCursorLocation? {
+        guard let textStorage, textStorage.length > 0 else { return nil }
+        var tables: [NSTextTable] = []
+        var seen = Set<ObjectIdentifier>()
+        var paragraphLocation = 0
+        let text = textStorage.string as NSString
+
+        while paragraphLocation < text.length {
+            let paragraphRange = text.paragraphRange(for: NSRange(location: paragraphLocation, length: 0))
+            let styleLocation = min(paragraphRange.location, max(0, textStorage.length - 1))
+            if let paragraph = textStorage.attribute(.paragraphStyle, at: styleLocation, effectiveRange: nil) as? NSParagraphStyle,
+               let tableBlock = paragraph.textBlocks.first(where: { $0 is NSTextTableBlock }) as? NSTextTableBlock {
+                let id = ObjectIdentifier(tableBlock.table)
+                if !seen.contains(id) {
+                    seen.insert(id)
+                    tables.append(tableBlock.table)
+                }
+            }
+            paragraphLocation = NSMaxRange(paragraphRange)
+        }
+
+        for table in tables {
+            for cell in tableCursorLocations(for: table) {
+                guard let rect = tableCellRect(for: cell) else { continue }
+                if rect.contains(point) {
+                    return cell
+                }
+            }
+        }
+        return nil
+    }
+
+    private func insertionLocation(in cell: TableCursorLocation, at point: NSPoint) -> Int {
+        guard let layoutManager, let textContainer, let textStorage else {
+            return cell.paragraphRange.location
+        }
+        let containerPoint = NSPoint(
+            x: point.x - textContainerInset.width,
+            y: point.y - textContainerInset.height
+        )
+        var fraction: CGFloat = 0
+        let rawIndex = layoutManager.characterIndex(
+            for: containerPoint,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: &fraction
+        )
+
+        let start = cell.paragraphRange.location
+        let end = max(start, NSMaxRange(cell.paragraphRange) - 1)
+        let clamped = min(max(start, rawIndex), end)
+        return min(clamped, max(0, textStorage.length))
+    }
+
+    private func tableAddButtonRect(for table: NSTextTable) -> NSRect? {
+        guard let frame = tableRect(for: table) else { return nil }
+        let size = Self.tableAddButtonSize
+        let x = frame.minX - size - 6
+        let y = isFlipped ? frame.maxY + 4 : frame.minY - size - 4
+        return NSRect(x: x, y: y, width: size, height: size)
+    }
+
+    private func tableRowResizeTarget(at point: NSPoint, table: NSTextTable) -> TableRowResizeTarget? {
+        let cells = tableCursorLocations(for: table)
+        guard !cells.isEmpty else { return nil }
+
+        let maxRow = cells.map { $0.row }.max() ?? 0
+        for row in 0...maxRow {
+            let rowCells = cells.filter { $0.row == row }
+            guard !rowCells.isEmpty else { continue }
+
+            var rowRect: NSRect?
+            for cell in rowCells {
+                guard let rect = tableCellRect(for: cell) else { continue }
+                rowRect = rowRect == nil ? rect : rowRect!.union(rect)
+            }
+            guard let resolvedRowRect = rowRect else { continue }
+
+            let boundaryY = isFlipped ? resolvedRowRect.maxY : resolvedRowRect.minY
+            let hitRect = NSRect(
+                x: resolvedRowRect.minX,
+                y: boundaryY - Self.tableRowResizeHitHeight / 2,
+                width: resolvedRowRect.width,
+                height: Self.tableRowResizeHitHeight
+            )
+            if hitRect.contains(point) {
+                return TableRowResizeTarget(table: table, row: row, hitRect: hitRect)
+            }
+        }
+        return nil
+    }
+
+    private func currentMinimumLineHeight(for row: Int, in table: NSTextTable) -> CGFloat {
+        let cells = tableCursorLocations(for: table).filter { $0.row == row }
+        guard let first = cells.first else { return Self.minTableRowHeight }
+        guard let textStorage, textStorage.length > 0 else { return Self.minTableRowHeight }
+        let styleLocation = min(first.paragraphRange.location, textStorage.length - 1)
+        let style = textStorage.attribute(.paragraphStyle, at: styleLocation, effectiveRange: nil) as? NSParagraphStyle
+        if let minimum = style?.minimumLineHeight, minimum > 0 {
+            return minimum
+        }
+        let font = (textStorage.attribute(.font, at: styleLocation, effectiveRange: nil) as? NSFont)
+            ?? NSFont.monospacedSystemFont(ofSize: Self.editorFontSize, weight: .regular)
+        let natural = ceil(font.ascender - font.descender + font.leading) + 2
+        return max(Self.minTableRowHeight, natural)
+    }
+
+    private func applyMinimumLineHeight(_ minimumHeight: CGFloat, for row: Int, in table: NSTextTable) {
+        guard let textStorage else { return }
+        let cells = tableCursorLocations(for: table).filter { $0.row == row }
+        guard !cells.isEmpty else { return }
+
+        for cell in cells {
+            let styleLocation = min(cell.paragraphRange.location, max(0, textStorage.length - 1))
+            let existing = textStorage.attribute(.paragraphStyle, at: styleLocation, effectiveRange: nil) as? NSParagraphStyle
+            let base = (existing?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            base.minimumLineHeight = minimumHeight
+            if base.maximumLineHeight > 0, base.maximumLineHeight < minimumHeight {
+                base.maximumLineHeight = 0
+            }
+            textStorage.addAttribute(.paragraphStyle, value: base, range: cell.paragraphRange)
+        }
+    }
+
+    private func clearHoveredTableControls() {
+        let hadState = hoveredTableForAddButton != nil || hoveredTableAddButtonRect != nil || hoveredTableRowResizeTarget != nil
+        hoveredTableForAddButton = nil
+        hoveredTableAddButtonRect = nil
+        hoveredTableRowResizeTarget = nil
+        if hadState {
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    private func updateHoveredTableControls(at point: NSPoint) {
+        if tableRowResizeSession != nil { return }
+
+        if let hoveredRect = hoveredTableAddButtonRect, hoveredRect.insetBy(dx: -8, dy: -8).contains(point) {
+            hoveredTableRowResizeTarget = nil
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+            return
+        }
+
+        let index = characterIndexForInsertion(at: point)
+        guard let textStorage, index >= 0, index < textStorage.length,
+              let table = tableCursorLocation(at: index)?.table else {
+            if let hoveredRect = hoveredTableAddButtonRect, hoveredRect.insetBy(dx: -8, dy: -8).contains(point) {
+                return
+            }
+            clearHoveredTableControls()
+            return
+        }
+
+        let addRect = tableAddButtonRect(for: table)
+        let resizeTarget: TableRowResizeTarget? = nil
+        let changed = hoveredTableForAddButton !== table
+            || hoveredTableAddButtonRect != addRect
+            || hoveredTableRowResizeTarget != nil
+
+        hoveredTableForAddButton = table
+        hoveredTableAddButtonRect = addRect
+        hoveredTableRowResizeTarget = resizeTarget
+        if changed {
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = self.convert(event.locationInWindow, from: nil)
+        updateHoveredTableControls(at: point)
+
+        if let addRect = hoveredTableAddButtonRect, addRect.insetBy(dx: -4, dy: -4).contains(point) {
+            if let table = hoveredTableForAddButton,
+               let anchor = tableCursorLocations(for: table).last {
+                setSelectedRange(NSRange(location: anchor.paragraphRange.location, length: 0))
+            }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotsyToolbarAction"),
+                object: nil,
+                userInfo: ["action": "table-row-add"]
+            )
+            return
+        }
+
         if beginImageResizeIfNeeded(at: point) {
+            return
+        }
+
+        // Make cell switching deterministic even in tall/mostly-empty table rows.
+        if event.type == .leftMouseDown, event.clickCount == 1,
+           !event.modifierFlags.contains(.shift),
+           !event.modifierFlags.contains(.control),
+           !event.modifierFlags.contains(.option),
+           let cell = tableCell(at: point) {
+            let targetLocation = insertionLocation(in: cell, at: point)
+            setSelectedRange(NSRange(location: targetLocation, length: 0))
+            if let delegate = self.delegate as? RichTextEditorView.Coordinator {
+                delegate.updateSelectionText(for: self)
+            }
+            resetTypingAttributesForCurrentSelection()
             return
         }
 
@@ -553,6 +992,15 @@ class CustomTextView: NSTextView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if let rowResize = tableRowResizeSession {
+            let point = convert(event.locationInWindow, from: nil)
+            let delta = isFlipped ? (point.y - rowResize.startPoint.y) : (rowResize.startPoint.y - point.y)
+            let targetHeight = max(Self.minTableRowHeight, rowResize.initialMinimumLineHeight + delta)
+            applyMinimumLineHeight(targetHeight, for: rowResize.row, in: rowResize.table)
+            needsDisplay = true
+            return
+        }
+
         guard let resizeAttachmentIndex else {
             super.mouseDragged(with: event)
             return
@@ -578,6 +1026,16 @@ class CustomTextView: NSTextView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if tableRowResizeSession != nil {
+            tableRowResizeSession = nil
+            let point = convert(event.locationInWindow, from: nil)
+            updateHoveredTableControls(at: point)
+            if let delegate = delegate as? RichTextEditorView.Coordinator {
+                delegate.saveState()
+            }
+            return
+        }
+
         if resizeAttachmentIndex != nil {
             let didResize = didBeginResizeDrag
             let point = convert(event.locationInWindow, from: nil)
@@ -615,8 +1073,13 @@ class CustomTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        updateHoveredTableControls(at: point)
         updateHoveredAttachment(at: point)
-        if isPointOverResizeHandle(point) {
+        if let addRect = hoveredTableAddButtonRect, addRect.contains(point) {
+            NSCursor.pointingHand.set()
+        } else if hoveredTableRowResizeTarget?.hitRect.contains(point) == true {
+            NSCursor.resizeUpDown.set()
+        } else if isPointOverResizeHandle(point) {
             Self.diagonalResizeCursor.set()
         }
         super.mouseMoved(with: event)
@@ -624,7 +1087,11 @@ class CustomTextView: NSTextView {
 
     override func cursorUpdate(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if isPointOverResizeHandle(point) {
+        if let addRect = hoveredTableAddButtonRect, addRect.contains(point) {
+            NSCursor.pointingHand.set()
+        } else if hoveredTableRowResizeTarget?.hitRect.contains(point) == true {
+            NSCursor.resizeUpDown.set()
+        } else if isPointOverResizeHandle(point) {
             Self.diagonalResizeCursor.set()
         } else {
             NSCursor.iBeam.set()
@@ -633,21 +1100,30 @@ class CustomTextView: NSTextView {
 
     override func mouseExited(with event: NSEvent) {
         setHoveredAttachmentIndex(nil)
+        clearHoveredTableControls()
         super.mouseExited(with: event)
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        guard let attachmentIndex = hoveredAttachmentIndex,
-              let attachmentRect = attachmentRect(for: attachmentIndex) else { return }
-        addCursorRect(
-            imageResizeHandleHitRect(for: attachmentRect),
-            cursor: Self.diagonalResizeCursor
-        )
+        if let attachmentIndex = hoveredAttachmentIndex,
+           let attachmentRect = attachmentRect(for: attachmentIndex) {
+            addCursorRect(
+                imageResizeHandleHitRect(for: attachmentRect),
+                cursor: Self.diagonalResizeCursor
+            )
+        }
+        if let addRect = hoveredTableAddButtonRect {
+            addCursorRect(addRect, cursor: .pointingHand)
+        }
+        if let rowTarget = hoveredTableRowResizeTarget {
+            addCursorRect(rowTarget.hitRect, cursor: .resizeUpDown)
+        }
     }
 
     override func didChangeText() {
         normalizeListParagraphStylesIfNeeded()
+        normalizeTableStructuresIfNeeded()
         normalizeImageAttachmentsIfNeeded()
         refreshDetectedLinks()
         if let pendingEditedRange {
@@ -656,6 +1132,527 @@ class CustomTextView: NSTextView {
         }
         super.didChangeText()
         refreshImageChrome()
+    }
+
+    private func normalizeTableStructuresIfNeeded() {
+        guard !isNormalizingTableStructure else { return }
+        guard let textStorage, textStorage.length > 0 else { return }
+
+        let text = textStorage.string as NSString
+        var groupsByID: [ObjectIdentifier: TableNormalizationGroup] = [:]
+        var orderedGroupIDs: [ObjectIdentifier] = []
+        var paragraphLocation = 0
+
+        while paragraphLocation < text.length {
+            let paragraphRange = text.paragraphRange(for: NSRange(location: paragraphLocation, length: 0))
+            let styleLocation = min(paragraphRange.location, max(0, textStorage.length - 1))
+            guard let paragraph = textStorage.attribute(
+                .paragraphStyle,
+                at: styleLocation,
+                effectiveRange: nil
+            ) as? NSParagraphStyle,
+            let tableBlock = paragraph.textBlocks.first(where: { $0 is NSTextTableBlock }) as? NSTextTableBlock
+            else {
+                paragraphLocation = NSMaxRange(paragraphRange)
+                continue
+            }
+
+            let rawValue = text.substring(with: paragraphRange)
+            let singleLine = rawValue
+                .trimmingCharacters(in: .newlines)
+                .replacingOccurrences(of: "\r\n", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let paragraphInfo = TableNormalizationParagraph(
+                table: tableBlock.table,
+                tableBlock: tableBlock,
+                row: tableBlock.startingRow,
+                column: tableBlock.startingColumn,
+                paragraphRange: paragraphRange,
+                value: singleLine,
+                minimumLineHeight: paragraph.minimumLineHeight > 0 ? paragraph.minimumLineHeight : nil
+            )
+
+            let groupID = ObjectIdentifier(tableBlock.table)
+            if groupsByID[groupID] == nil {
+                orderedGroupIDs.append(groupID)
+                groupsByID[groupID] = TableNormalizationGroup(
+                    table: tableBlock.table,
+                    paragraphs: [paragraphInfo],
+                    tableRange: paragraphRange
+                )
+            } else {
+                groupsByID[groupID]?.paragraphs.append(paragraphInfo)
+                if let currentRange = groupsByID[groupID]?.tableRange {
+                    groupsByID[groupID]?.tableRange = NSUnionRange(currentRange, paragraphRange)
+                }
+            }
+
+            paragraphLocation = NSMaxRange(paragraphRange)
+        }
+
+        guard !orderedGroupIDs.isEmpty else { return }
+
+        let selected = selectedRange()
+        let selectionProbe = min(max(0, selected.location), max(0, textStorage.length - 1))
+        let anchorCell = tableCursorLocation(at: selectionProbe)
+
+        var replacements: [TableNormalizationReplacement] = []
+
+        for groupID in orderedGroupIDs {
+            guard let group = groupsByID[groupID], !group.paragraphs.isEmpty else { continue }
+
+            let rowCount = (group.paragraphs.map(\.row).max() ?? -1) + 1
+            let detectedColumnCount = (group.paragraphs.map(\.column).max() ?? -1) + 1
+            let columnCount = max(group.table.numberOfColumns, detectedColumnCount)
+            guard rowCount > 0, columnCount > 0 else { continue }
+
+            var valueByKey: [String: String] = [:]
+            var countByKey: [String: Int] = [:]
+            var minimumLineHeightByRow: [Int: CGFloat] = [:]
+            var hasIrregularBlock = false
+
+            for paragraph in group.paragraphs.sorted(by: { $0.paragraphRange.location < $1.paragraphRange.location }) {
+                let key = "\(paragraph.row):\(paragraph.column)"
+                countByKey[key, default: 0] += 1
+
+                if let minimumLineHeight = paragraph.minimumLineHeight, minimumLineHeight > 0 {
+                    minimumLineHeightByRow[paragraph.row] = max(
+                        minimumLineHeightByRow[paragraph.row] ?? 0,
+                        minimumLineHeight
+                    )
+                }
+
+                if paragraph.tableBlock.rowSpan != 1 || paragraph.tableBlock.columnSpan != 1 {
+                    hasIrregularBlock = true
+                }
+
+                let cleanedValue = paragraph.value
+                if cleanedValue.isEmpty { continue }
+                if let existing = valueByKey[key], !existing.isEmpty {
+                    valueByKey[key] = "\(existing) \(cleanedValue)"
+                } else {
+                    valueByKey[key] = cleanedValue
+                }
+            }
+
+            let expectedCellCount = rowCount * columnCount
+            let hasDuplicates = countByKey.values.contains(where: { $0 > 1 })
+            let hasMissingCells = countByKey.keys.count != expectedCellCount
+            let hasColumnMismatch = group.table.numberOfColumns != columnCount
+            let shouldNormalize = hasDuplicates || hasMissingCells || hasIrregularBlock || hasColumnMismatch
+            guard shouldNormalize else { continue }
+
+            let baseLocation = min(max(0, group.tableRange.location), textStorage.length - 1)
+            let sourceAttributes = textStorage.attributes(at: baseLocation, effectiveRange: nil)
+            var baseAttributes = normalizedTypingAttributes(base: sourceAttributes)
+            baseAttributes.removeValue(forKey: .paragraphStyle)
+
+            let borderColor = (group.paragraphs.first?.tableBlock.borderColor(for: .minX) as? NSColor)
+                ?? NSColor(calibratedWhite: 0.56, alpha: 0.82)
+
+            let targetRow = anchorCell?.table === group.table
+                ? min(max(0, anchorCell?.row ?? 0), rowCount - 1)
+                : nil
+            let targetColumn = anchorCell?.table === group.table
+                ? min(max(0, anchorCell?.column ?? 0), columnCount - 1)
+                : nil
+
+            let rebuilt = makeCanonicalTableAttributedText(
+                rows: rowCount,
+                columns: columnCount,
+                valueByKey: valueByKey,
+                baseAttributes: baseAttributes,
+                minimumLineHeightByRow: minimumLineHeightByRow,
+                borderColor: borderColor,
+                initialRow: targetRow,
+                initialColumn: targetColumn
+            )
+
+            let preferredCaretLocation = rebuilt.caretOffset.map { group.tableRange.location + $0 }
+            replacements.append(
+                TableNormalizationReplacement(
+                    range: group.tableRange,
+                    attributed: rebuilt.attributed,
+                    preferredCaretLocation: preferredCaretLocation
+                )
+            )
+        }
+
+        guard !replacements.isEmpty else { return }
+
+        isNormalizingTableStructure = true
+        defer { isNormalizingTableStructure = false }
+
+        var updatedSelection = selected
+        for replacement in replacements.sorted(by: { $0.range.location > $1.range.location }) {
+            let isCollapsedInsideRange = updatedSelection.length == 0
+                && updatedSelection.location >= replacement.range.location
+                && updatedSelection.location <= NSMaxRange(replacement.range)
+            let overlapsRange = NSIntersectionRange(updatedSelection, replacement.range).length > 0
+            let shouldApplyPreferredCaret = (isCollapsedInsideRange || overlapsRange)
+                && replacement.preferredCaretLocation != nil
+
+            textStorage.replaceCharacters(in: replacement.range, with: replacement.attributed)
+
+            if shouldApplyPreferredCaret, let preferredCaretLocation = replacement.preferredCaretLocation {
+                updatedSelection = NSRange(location: preferredCaretLocation, length: 0)
+            } else {
+                updatedSelection = adjustedSelectionAfterReplacement(
+                    updatedSelection,
+                    replacing: replacement.range,
+                    replacementLength: replacement.attributed.length
+                )
+            }
+        }
+
+        let clampedLocation = min(max(0, updatedSelection.location), textStorage.length)
+        let clampedLength = min(
+            max(0, updatedSelection.length),
+            max(0, textStorage.length - clampedLocation)
+        )
+        setSelectedRange(NSRange(location: clampedLocation, length: clampedLength))
+        resetTypingAttributesForCurrentSelection()
+        clearHoveredTableControls()
+    }
+
+    private func makeCanonicalTableAttributedText(
+        rows: Int,
+        columns: Int,
+        valueByKey: [String: String],
+        baseAttributes: [NSAttributedString.Key: Any],
+        minimumLineHeightByRow: [Int: CGFloat],
+        borderColor: NSColor,
+        initialRow: Int?,
+        initialColumn: Int?
+    ) -> (attributed: NSAttributedString, caretOffset: Int?) {
+        let table = NSTextTable()
+        table.numberOfColumns = columns
+
+        let mutable = NSMutableAttributedString()
+        var runningOffset = 0
+        var caretOffset: Int?
+
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let key = "\(row):\(column)"
+                let rawValue = valueByKey[key, default: ""]
+                let sanitizedValue = rawValue
+                    .replacingOccurrences(of: "\r\n", with: " ")
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\r", with: " ")
+                let cellValue = sanitizedValue.isEmpty ? " " : sanitizedValue
+                let paragraphText = cellValue + "\n"
+
+                if row == initialRow, column == initialColumn {
+                    caretOffset = runningOffset
+                }
+
+                let block = NSTextTableBlock(
+                    table: table,
+                    startingRow: row,
+                    rowSpan: 1,
+                    startingColumn: column,
+                    columnSpan: 1
+                )
+                block.setBorderColor(borderColor, for: .minX)
+                block.setBorderColor(borderColor, for: .maxX)
+                block.setBorderColor(borderColor, for: .minY)
+                block.setBorderColor(borderColor, for: .maxY)
+                block.setWidth(1.0, type: .absoluteValueType, for: .border)
+                block.setWidth(5, type: .absoluteValueType, for: .padding)
+
+                let paragraphStyle = NSMutableParagraphStyle()
+                paragraphStyle.textBlocks = [block]
+                paragraphStyle.lineSpacing = 4
+                if let minimumLineHeight = minimumLineHeightByRow[row], minimumLineHeight > 0 {
+                    paragraphStyle.minimumLineHeight = minimumLineHeight
+                }
+
+                var attrs = baseAttributes
+                attrs[.paragraphStyle] = paragraphStyle
+                let attributed = NSAttributedString(string: paragraphText, attributes: attrs)
+                mutable.append(attributed)
+                runningOffset += attributed.length
+            }
+        }
+
+        return (attributed: mutable, caretOffset: caretOffset)
+    }
+
+    private func adjustedSelectionAfterReplacement(
+        _ selection: NSRange,
+        replacing range: NSRange,
+        replacementLength: Int
+    ) -> NSRange {
+        let delta = replacementLength - range.length
+
+        func adjustedPoint(_ point: Int) -> Int {
+            if point <= range.location {
+                return point
+            }
+            if point >= NSMaxRange(range) {
+                return point + delta
+            }
+            return range.location + min(max(0, point - range.location), replacementLength)
+        }
+
+        let start = adjustedPoint(selection.location)
+        let end = adjustedPoint(selection.location + selection.length)
+        let location = min(start, end)
+        return NSRange(location: location, length: max(0, end - location))
+    }
+
+    private struct TableMutationContext {
+        let table: NSTextTable
+        let rowCount: Int
+        let columnCount: Int
+        let replacementRange: NSRange
+        let valuesByKey: [String: String]
+        let minimumLineHeightByRow: [Int: CGFloat]
+        let borderColor: NSColor
+        let currentRow: Int
+        let currentColumn: Int
+    }
+
+    func insertNewTable(
+        rows: Int,
+        columns: Int,
+        seedValues: [String: String] = [:],
+        focusRow: Int = 0,
+        focusColumn: Int = 0
+    ) -> Bool {
+        guard rows > 0, columns > 0, let textStorage else { return false }
+        let selection = selectedRange()
+        let baseIndex = min(max(0, selection.location), max(0, textStorage.length - 1))
+        let sourceAttributes = textStorage.length > 0 ? textStorage.attributes(at: baseIndex, effectiveRange: nil) : typingAttributes
+        var baseAttributes = normalizedTypingAttributes(base: sourceAttributes)
+        baseAttributes.removeValue(forKey: .paragraphStyle)
+
+        let targetRow = min(max(0, focusRow), rows - 1)
+        let targetColumn = min(max(0, focusColumn), columns - 1)
+        let table = makeCanonicalTableAttributedText(
+            rows: rows,
+            columns: columns,
+            valueByKey: seedValues,
+            baseAttributes: baseAttributes,
+            minimumLineHeightByRow: [:],
+            borderColor: NSColor(calibratedWhite: 0.56, alpha: 0.82),
+            initialRow: targetRow,
+            initialColumn: targetColumn
+        )
+        let caretLocation = selection.location + (table.caretOffset ?? 0)
+        return applyTableEdit(
+            replacing: selection,
+            with: table.attributed,
+            caretLocation: caretLocation
+        )
+    }
+
+    func insertDiffTemplateTable() -> Bool {
+        let seeds: [String: String] = [
+            "0:0": "Note A",
+            "0:1": "Note B"
+        ]
+        return insertNewTable(
+            rows: 2,
+            columns: 2,
+            seedValues: seeds,
+            focusRow: 1,
+            focusColumn: 0
+        )
+    }
+
+    func addRowToCurrentTable() -> Bool {
+        normalizeTableStructuresIfNeeded()
+        guard let context = currentTableMutationContext() else { return false }
+
+        let insertionRow = min(context.rowCount, context.currentRow + 1)
+        let newRowCount = context.rowCount + 1
+        var mappedValues: [String: String] = [:]
+        var mappedMinimumLineHeightByRow: [Int: CGFloat] = [:]
+
+        for row in 0..<context.rowCount {
+            let mappedRow = row >= insertionRow ? row + 1 : row
+            for column in 0..<context.columnCount {
+                let key = "\(row):\(column)"
+                if let value = context.valuesByKey[key], !value.isEmpty {
+                    mappedValues["\(mappedRow):\(column)"] = value
+                }
+            }
+            if let minimumLineHeight = context.minimumLineHeightByRow[row], minimumLineHeight > 0 {
+                mappedMinimumLineHeightByRow[mappedRow] = minimumLineHeight
+            }
+        }
+
+        return applyTableMutation(
+            context: context,
+            rows: newRowCount,
+            columns: context.columnCount,
+            valuesByKey: mappedValues,
+            minimumLineHeightByRow: mappedMinimumLineHeightByRow,
+            focusRow: insertionRow,
+            focusColumn: 0
+        )
+    }
+
+    func removeRowFromCurrentTable() -> Bool {
+        normalizeTableStructuresIfNeeded()
+        guard let context = currentTableMutationContext(), context.rowCount > 1 else { return false }
+
+        // Keep the first row as a header-like row, mirroring existing behavior.
+        let removableRow = context.currentRow == 0 ? 1 : context.currentRow
+        let targetRow = min(max(1, removableRow), context.rowCount - 1)
+        let newRowCount = context.rowCount - 1
+        var mappedValues: [String: String] = [:]
+        var mappedMinimumLineHeightByRow: [Int: CGFloat] = [:]
+
+        for row in 0..<context.rowCount {
+            if row == targetRow { continue }
+            let mappedRow = row > targetRow ? row - 1 : row
+            for column in 0..<context.columnCount {
+                let key = "\(row):\(column)"
+                if let value = context.valuesByKey[key], !value.isEmpty {
+                    mappedValues["\(mappedRow):\(column)"] = value
+                }
+            }
+            if let minimumLineHeight = context.minimumLineHeightByRow[row], minimumLineHeight > 0 {
+                mappedMinimumLineHeightByRow[mappedRow] = minimumLineHeight
+            }
+        }
+
+        let focusRow = min(context.currentRow, max(0, newRowCount - 1))
+        let focusColumn = min(context.currentColumn, max(0, context.columnCount - 1))
+        return applyTableMutation(
+            context: context,
+            rows: newRowCount,
+            columns: context.columnCount,
+            valuesByKey: mappedValues,
+            minimumLineHeightByRow: mappedMinimumLineHeightByRow,
+            focusRow: focusRow,
+            focusColumn: focusColumn
+        )
+    }
+
+    private func currentTableMutationContext() -> TableMutationContext? {
+        guard let textStorage, textStorage.length > 0 else { return nil }
+        let selection = selectedRange()
+        let probeLocation = min(max(0, selection.location), textStorage.length - 1)
+        guard let current = tableCursorLocation(at: probeLocation) else { return nil }
+
+        let cells = tableCursorLocations(for: current.table)
+        guard !cells.isEmpty else { return nil }
+
+        let rowCount = (cells.map(\.row).max() ?? -1) + 1
+        let columnCount = max(current.table.numberOfColumns, (cells.map(\.column).max() ?? -1) + 1)
+        guard rowCount > 0, columnCount > 0 else { return nil }
+
+        let minLocation = cells.map { $0.paragraphRange.location }.min() ?? current.paragraphRange.location
+        let maxLocation = cells.map { NSMaxRange($0.paragraphRange) }.max() ?? NSMaxRange(current.paragraphRange)
+        let replacementRange = NSRange(location: minLocation, length: max(0, maxLocation - minLocation))
+
+        var valuesByKey: [String: String] = [:]
+        var minimumLineHeightByRow: [Int: CGFloat] = [:]
+        for cell in cells {
+            let key = "\(cell.row):\(cell.column)"
+            let value = tableCellValue(for: cell.paragraphRange)
+            if !value.isEmpty {
+                valuesByKey[key] = value
+            }
+            if let minimumLineHeight = minimumLineHeight(at: cell.paragraphRange.location), minimumLineHeight > 0 {
+                minimumLineHeightByRow[cell.row] = max(minimumLineHeightByRow[cell.row] ?? 0, minimumLineHeight)
+            }
+        }
+
+        let borderColor = (cells.first?.tableBlock.borderColor(for: .minX) as? NSColor)
+            ?? NSColor(calibratedWhite: 0.56, alpha: 0.82)
+
+        return TableMutationContext(
+            table: current.table,
+            rowCount: rowCount,
+            columnCount: columnCount,
+            replacementRange: replacementRange,
+            valuesByKey: valuesByKey,
+            minimumLineHeightByRow: minimumLineHeightByRow,
+            borderColor: borderColor,
+            currentRow: current.row,
+            currentColumn: current.column
+        )
+    }
+
+    private func tableCellValue(for paragraphRange: NSRange) -> String {
+        guard let textStorage else { return "" }
+        let text = textStorage.string as NSString
+        let raw = text.substring(with: paragraphRange)
+        return raw
+            .trimmingCharacters(in: .newlines)
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func minimumLineHeight(at location: Int) -> CGFloat? {
+        guard let textStorage, textStorage.length > 0 else { return nil }
+        let safeLocation = min(max(0, location), textStorage.length - 1)
+        let paragraph = textStorage.attribute(.paragraphStyle, at: safeLocation, effectiveRange: nil) as? NSParagraphStyle
+        let minimum = paragraph?.minimumLineHeight ?? 0
+        return minimum > 0 ? minimum : nil
+    }
+
+    private func applyTableMutation(
+        context: TableMutationContext,
+        rows: Int,
+        columns: Int,
+        valuesByKey: [String: String],
+        minimumLineHeightByRow: [Int: CGFloat],
+        focusRow: Int,
+        focusColumn: Int
+    ) -> Bool {
+        guard let textStorage else { return false }
+        let baseIndex = min(max(0, context.replacementRange.location), textStorage.length - 1)
+        let sourceAttributes = textStorage.attributes(at: baseIndex, effectiveRange: nil)
+        var baseAttributes = normalizedTypingAttributes(base: sourceAttributes)
+        baseAttributes.removeValue(forKey: .paragraphStyle)
+
+        let clampedRow = min(max(0, focusRow), max(0, rows - 1))
+        let clampedColumn = min(max(0, focusColumn), max(0, columns - 1))
+        let table = makeCanonicalTableAttributedText(
+            rows: rows,
+            columns: columns,
+            valueByKey: valuesByKey,
+            baseAttributes: baseAttributes,
+            minimumLineHeightByRow: minimumLineHeightByRow,
+            borderColor: context.borderColor,
+            initialRow: clampedRow,
+            initialColumn: clampedColumn
+        )
+        let caretLocation = context.replacementRange.location + (table.caretOffset ?? 0)
+        return applyTableEdit(
+            replacing: context.replacementRange,
+            with: table.attributed,
+            caretLocation: caretLocation
+        )
+    }
+
+    private func applyTableEdit(
+        replacing range: NSRange,
+        with replacement: NSAttributedString,
+        caretLocation: Int
+    ) -> Bool {
+        guard let textStorage else { return false }
+        registerPendingEdit(affectedRange: range, replacementString: replacement.string)
+        guard shouldChangeText(in: range, replacementString: replacement.string) else { return false }
+
+        textStorage.replaceCharacters(in: range, with: replacement)
+        let targetLocation = min(max(0, caretLocation), textStorage.length)
+        setSelectedRange(NSRange(location: targetLocation, length: 0))
+        didChangeText()
+        resetTypingAttributesForCurrentSelection()
+        scrollRangeToVisible(NSRange(location: targetLocation, length: 0))
+        return true
     }
 
     private func applyCodeHighlightingForEditedRange(_ editedRange: NSRange, preferredLanguage: DetectedCodeLanguage?) {
@@ -896,6 +1893,19 @@ class CustomTextView: NSTextView {
             let styleSource = textStorage.attribute(.paragraphStyle, at: styleSourceIndex, effectiveRange: nil) as? NSParagraphStyle
             let paragraph = (styleSource?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
             var didChange = false
+
+            let hasTableBlock = paragraph.textBlocks.contains { $0 is NSTextTableBlock }
+            if hasTableBlock {
+                if paragraph.lineSpacing != 4 {
+                    paragraph.lineSpacing = 4
+                    didChange = true
+                }
+                if didChange {
+                    textStorage.addAttribute(.paragraphStyle, value: paragraph, range: paragraphRange)
+                }
+                paragraphLocation = NSMaxRange(paragraphRange)
+                continue
+            }
 
             if !paragraph.textLists.isEmpty {
                 paragraph.textLists = []
@@ -1501,34 +2511,63 @@ class CustomTextView: NSTextView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        guard let attachmentIndex = chromeAttachmentIndex,
-              let attachmentRect = attachmentRect(for: attachmentIndex),
-              attachmentRect.intersects(dirtyRect) else { return }
+        if let attachmentIndex = chromeAttachmentIndex,
+           let attachmentRect = attachmentRect(for: attachmentIndex),
+           attachmentRect.intersects(dirtyRect) {
+            let outlineRect = attachmentRect.insetBy(dx: -1, dy: -1)
+            NSColor.white.withAlphaComponent(0.22).setStroke()
+            let outline = NSBezierPath(roundedRect: outlineRect, xRadius: 3, yRadius: 3)
+            outline.lineWidth = 1
+            outline.stroke()
 
-        let outlineRect = attachmentRect.insetBy(dx: -1, dy: -1)
-        NSColor.white.withAlphaComponent(0.22).setStroke()
-        let outline = NSBezierPath(roundedRect: outlineRect, xRadius: 3, yRadius: 3)
-        outline.lineWidth = 1
-        outline.stroke()
+            let handleRect = imageResizeHandleRect(for: attachmentRect)
+            let handlePath = NSBezierPath(roundedRect: handleRect, xRadius: 2, yRadius: 2)
+            NSColor.white.withAlphaComponent(0.95).setFill()
+            handlePath.fill()
+            NSColor.black.withAlphaComponent(0.22).setStroke()
+            handlePath.lineWidth = 0.8
+            handlePath.stroke()
 
-        let handleRect = imageResizeHandleRect(for: attachmentRect)
-        let handlePath = NSBezierPath(roundedRect: handleRect, xRadius: 2, yRadius: 2)
-        NSColor.white.withAlphaComponent(0.95).setFill()
-        handlePath.fill()
-        NSColor.black.withAlphaComponent(0.22).setStroke()
-        handlePath.lineWidth = 0.8
-        handlePath.stroke()
-
-        let grip = NSBezierPath()
-        grip.lineWidth = 1
-        let endX = handleRect.maxX - 2
-        let endY = handleRect.maxY - 2
-        for inset in [6.0, 4.0, 2.0] {
-            grip.move(to: NSPoint(x: endX - inset, y: endY))
-            grip.line(to: NSPoint(x: endX, y: endY - inset))
+            let grip = NSBezierPath()
+            grip.lineWidth = 1
+            let endX = handleRect.maxX - 2
+            let endY = handleRect.maxY - 2
+            for inset in [6.0, 4.0, 2.0] {
+                grip.move(to: NSPoint(x: endX - inset, y: endY))
+                grip.line(to: NSPoint(x: endX, y: endY - inset))
+            }
+            NSColor.black.withAlphaComponent(0.45).setStroke()
+            grip.stroke()
         }
-        NSColor.black.withAlphaComponent(0.45).setStroke()
-        grip.stroke()
+
+        if let rowTarget = hoveredTableRowResizeTarget, rowTarget.hitRect.intersects(dirtyRect) {
+            let y = rowTarget.hitRect.midY
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: rowTarget.hitRect.minX, y: y))
+            path.line(to: NSPoint(x: rowTarget.hitRect.maxX, y: y))
+            path.lineWidth = 1
+            NSColor.white.withAlphaComponent(0.35).setStroke()
+            path.stroke()
+        }
+
+        if let addRect = hoveredTableAddButtonRect, addRect.intersects(dirtyRect) {
+            let circle = NSBezierPath(ovalIn: addRect)
+            NSColor(calibratedWhite: 0.18, alpha: 0.95).setFill()
+            circle.fill()
+            NSColor.white.withAlphaComponent(0.55).setStroke()
+            circle.lineWidth = 1
+            circle.stroke()
+
+            let plus = NSBezierPath()
+            plus.lineWidth = 1.6
+            plus.lineCapStyle = .round
+            plus.move(to: NSPoint(x: addRect.midX - 4, y: addRect.midY))
+            plus.line(to: NSPoint(x: addRect.midX + 4, y: addRect.midY))
+            plus.move(to: NSPoint(x: addRect.midX, y: addRect.midY - 4))
+            plus.line(to: NSPoint(x: addRect.midX, y: addRect.midY + 4))
+            NSColor.white.withAlphaComponent(0.95).setStroke()
+            plus.stroke()
+        }
     }
 
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
@@ -1726,6 +2765,7 @@ struct RichTextEditorView: NSViewRepresentable {
         private var findQuery: String = ""
         private var findMatches: [NSRange] = []
         private var currentFindIndex: Int = -1
+        private var isNormalizingSelectionRange = false
         private struct EditorViewportState {
             let selectedRange: NSRange
             let verticalOffset: CGFloat
@@ -1764,6 +2804,14 @@ struct RichTextEditorView: NSViewRepresentable {
                 toggleList(isCheckbox: false)
             } else if action == "checkbox" {
                 toggleList(isCheckbox: true)
+            } else if action == "table-insert" {
+                insertTable(rows: 3, columns: 3)
+            } else if action == "table-diff" {
+                insertDiffTableTemplate()
+            } else if action == "table-row-add" {
+                addRowInCurrentTable()
+            } else if action == "table-row-remove" {
+                removeRowInCurrentTable()
             } else if action == "font-system" || action == "font-sans" {
                 applyFontStyle(.system)
             } else if action == "font-serif" {
@@ -2704,6 +3752,30 @@ struct RichTextEditorView: NSViewRepresentable {
 
             textView.setSelectedRange(NSRange(location: length, length: 0))
         }
+
+        private func insertDiffTableTemplate() {
+            guard let textView = self.textView as? CustomTextView else { return }
+            guard textView.insertDiffTemplateTable() else { return }
+            saveState()
+        }
+
+        private func addRowInCurrentTable() {
+            guard let textView = self.textView as? CustomTextView else { return }
+            guard textView.addRowToCurrentTable() else { return }
+            saveState()
+        }
+
+        private func removeRowInCurrentTable() {
+            guard let textView = self.textView as? CustomTextView else { return }
+            guard textView.removeRowFromCurrentTable() else { return }
+            saveState()
+        }
+
+        private func insertTable(rows: Int, columns: Int) {
+            guard let textView = self.textView as? CustomTextView else { return }
+            guard textView.insertNewTable(rows: rows, columns: columns) else { return }
+            saveState()
+        }
         
         func toggleList(isCheckbox: Bool) {
             guard let textView = self.textView else { return }
@@ -2908,6 +3980,13 @@ struct RichTextEditorView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            if !isNormalizingSelectionRange,
+               let normalized = normalizedSelectionRangeRemovingTrailingWhitespace(in: textView),
+               normalized != textView.selectedRange() {
+                isNormalizingSelectionRange = true
+                textView.setSelectedRange(normalized)
+                isNormalizingSelectionRange = false
+            }
             if let customTextView = textView as? CustomTextView {
                 if textView.selectedRange().length == 0 {
                     customTextView.resetTypingAttributesForCurrentSelection()
@@ -2919,6 +3998,37 @@ struct RichTextEditorView: NSViewRepresentable {
             if let noteID = currentNoteID {
                 captureViewportState(for: noteID, in: textView)
             }
+        }
+
+        private func normalizedSelectionRangeRemovingTrailingWhitespace(in textView: NSTextView) -> NSRange? {
+            let selected = textView.selectedRange()
+            guard selected.location != NSNotFound, selected.length > 0 else { return nil }
+            let nsText = textView.string as NSString
+            guard selected.location + selected.length <= nsText.length else { return nil }
+
+            var start = selected.location
+            var end = selected.location + selected.length
+            while start < end {
+                let scalar = UnicodeScalar(nsText.character(at: start))
+                if let scalar, CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    start += 1
+                } else {
+                    break
+                }
+            }
+            while end > selected.location {
+                let scalar = UnicodeScalar(nsText.character(at: end - 1))
+                if let scalar, CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    end -= 1
+                } else {
+                    break
+                }
+            }
+
+            let trimmedLength = end - start
+            guard trimmedLength > 0 else { return nil }
+            if start == selected.location && trimmedLength == selected.length { return nil }
+            return NSRange(location: start, length: trimmedLength)
         }
         
         func updateFormattingState(for textView: NSTextView) {

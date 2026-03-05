@@ -2006,6 +2006,23 @@ struct MainPanel: View {
                 }
                 .buttonStyle(PointerPlainButtonStyle())
                 .help("Checklist")
+
+                Menu {
+                    Button("Insert 3x3 Table") { postToolbarAction("table-insert") }
+                    Button("Insert Diff Table") { postToolbarAction("table-diff") }
+                    Divider()
+                    Button("Add Row") { postToolbarAction("table-row-add") }
+                    Button("Remove Row") { postToolbarAction("table-row-remove") }
+                } label: {
+                    Image(systemName: "tablecells")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .buttonStyle(PointerPlainButtonStyle())
+                .pointingHandCursor()
+                .help("Insert table")
             }
 
             Divider().frame(height: 14).background(Theme.border)

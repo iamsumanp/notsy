@@ -13,6 +13,7 @@ Notsy is a lightning-fast, keyboard-first, native macOS notes application design
 - **Raycast-Inspired UI:** A beautiful, borderless, dark-themed floating window that feels like a native OS extension.
 - **Keyboard First:** Never touch your mouse. Summon the app, search, create, and edit entirely via keyboard shortcuts.
 - **Smart Markdown-like Lists:** Natively converts `- ` into bullets and supports nested tab-indentation and Notion-style interactive checkboxes `○` / `◉`.
+- **Tables + Diff Template:** Insert bordered rich-text tables, including a ready-to-fill diff template (`Line | Note A | Note B`) for comparing notes.
 - **Instant Search:** As you type, Notsy searches titles and content and auto-selects the top hit for instant editing.
 - **Pinning:** Keep important notes at the top of your sidebar forever.
 - **Privacy Focused:** Local-first. Notes are stored on your machine, with optional Notion sync only if you enable it.
@@ -39,6 +40,7 @@ Rich text editor highlights:
 - Bold, italic, underline, strikethrough
 - Font style controls (sans/serif/mono)
 - Smart bullets and interactive checkboxes
+- Rich-text tables with keyboard cell navigation (`Tab` / `Shift+Tab`)
 - Inline links and image support
 - Text color controls and formatting toolbar
 
