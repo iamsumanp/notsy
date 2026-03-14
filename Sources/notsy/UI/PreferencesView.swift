@@ -16,14 +16,23 @@ struct PreferencesView: View {
     @State private var isTestingNotionConnection = false
     @State private var notionAutosaveTask: Task<Void, Never>?
     @State private var aiEnabled: Bool
+    @State private var aiProvider: AIWritingProvider
+    @State private var openAIEnabled: Bool
+    @State private var geminiEnabled: Bool
     @State private var aiModel: String
+    @State private var geminiModel: String
     @State private var openAIAPIKey: String
+    @State private var geminiAPIKey: String
     @State private var aiMessage: String?
     @State private var aiAutosaveTask: Task<Void, Never>?
     @State private var aiModelFetchTask: Task<Void, Never>?
+    @State private var geminiModelFetchTask: Task<Void, Never>?
     @State private var availableAIModels: [String] = []
+    @State private var availableGeminiModels: [String] = []
     @State private var isLoadingAIModels = false
+    @State private var isLoadingGeminiModels = false
     @State private var loadedModelsForAPIKey: String = ""
+    @State private var loadedModelsForGeminiAPIKey: String = ""
     @State private var showDeleteUnpinnedConfirmation = false
     @AppStorage("notsy.selection.color") private var selectionColorChoice: String = "blue"
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
@@ -40,10 +49,28 @@ struct PreferencesView: View {
             account: NotionSyncService.legacyTokenKeychainAccount
         ) ?? "")
         _aiEnabled = State(initialValue: defaults.bool(forKey: AIWritingService.enabledDefaultsKey))
+        _aiProvider = State(
+            initialValue: AIWritingProvider(rawValue: defaults.string(forKey: AIWritingService.providerDefaultsKey) ?? "")
+                ?? .openAI
+        )
+        _openAIEnabled = State(
+            initialValue: defaults.object(forKey: AIWritingService.openAIEnabledDefaultsKey) == nil
+                ? defaults.bool(forKey: AIWritingService.enabledDefaultsKey)
+                : defaults.bool(forKey: AIWritingService.openAIEnabledDefaultsKey)
+        )
+        _geminiEnabled = State(initialValue: defaults.bool(forKey: AIWritingService.geminiEnabledDefaultsKey))
         _aiModel = State(initialValue: defaults.string(forKey: AIWritingService.modelDefaultsKey) ?? AIWritingService.defaultModel)
+        _geminiModel = State(
+            initialValue: defaults.string(forKey: AIWritingService.geminiModelDefaultsKey)
+                ?? AIWritingService.defaultGeminiModel
+        )
         _openAIAPIKey = State(initialValue: KeychainHelper.load(
             service: AIWritingService.keychainService,
             account: AIWritingService.apiKeyKeychainAccount
+        ) ?? "")
+        _geminiAPIKey = State(initialValue: KeychainHelper.load(
+            service: AIWritingService.keychainService,
+            account: AIWritingService.geminiAPIKeyKeychainAccount
         ) ?? "")
     }
 
@@ -228,32 +255,59 @@ struct PreferencesView: View {
     }
 
     private func persistAISettings(showMessage: Bool) {
-        let trimmedModel = aiModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedModel = trimmedModel.isEmpty ? AIWritingService.defaultModel : trimmedModel
-        let trimmedAPIKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedOpenAIModel = aiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedOpenAIModel = trimmedOpenAIModel.isEmpty ? AIWritingService.defaultModel : trimmedOpenAIModel
+        let trimmedGeminiModel = geminiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedGeminiModel = trimmedGeminiModel.isEmpty ? AIWritingService.defaultGeminiModel : trimmedGeminiModel
+        let trimmedOpenAIAPIKey = openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGeminiAPIKey = geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
         UserDefaults.standard.set(aiEnabled, forKey: AIWritingService.enabledDefaultsKey)
-        UserDefaults.standard.set(normalizedModel, forKey: AIWritingService.modelDefaultsKey)
+        UserDefaults.standard.set(aiProvider.rawValue, forKey: AIWritingService.providerDefaultsKey)
+        UserDefaults.standard.set(openAIEnabled, forKey: AIWritingService.openAIEnabledDefaultsKey)
+        UserDefaults.standard.set(geminiEnabled, forKey: AIWritingService.geminiEnabledDefaultsKey)
+        UserDefaults.standard.set(normalizedOpenAIModel, forKey: AIWritingService.modelDefaultsKey)
+        UserDefaults.standard.set(normalizedGeminiModel, forKey: AIWritingService.geminiModelDefaultsKey)
 
-        if !trimmedAPIKey.isEmpty {
+        if !trimmedOpenAIAPIKey.isEmpty {
             guard KeychainHelper.save(
                 service: AIWritingService.keychainService,
                 account: AIWritingService.apiKeyKeychainAccount,
-                value: trimmedAPIKey
+                value: trimmedOpenAIAPIKey
             ) else {
                 aiMessage = "Failed to save OpenAI API key in Keychain."
                 return
             }
         }
+        if !trimmedGeminiAPIKey.isEmpty {
+            guard KeychainHelper.save(
+                service: AIWritingService.keychainService,
+                account: AIWritingService.geminiAPIKeyKeychainAccount,
+                value: trimmedGeminiAPIKey
+            ) else {
+                aiMessage = "Failed to save Gemini API key in Keychain."
+                return
+            }
+        }
 
         guard showMessage else { return }
-        if aiEnabled {
-            aiMessage = trimmedAPIKey.isEmpty
-                ? "Saved. Add an OpenAI API key before using AI actions."
-                : "AI settings saved."
-        } else {
+        if !aiEnabled {
             aiMessage = "AI settings saved."
+            return
         }
+        if !openAIEnabled && !geminiEnabled {
+            aiMessage = "Saved. Enable at least one AI provider."
+            return
+        }
+        if aiProvider == .openAI && openAIEnabled && trimmedOpenAIAPIKey.isEmpty {
+            aiMessage = "Saved. Add an OpenAI API key before using OpenAI."
+            return
+        }
+        if aiProvider == .gemini && geminiEnabled && trimmedGeminiAPIKey.isEmpty {
+            aiMessage = "Saved. Add a Gemini API key before using Gemini."
+            return
+        }
+        aiMessage = "AI settings saved."
     }
 
     private func saveAISettings() {
@@ -271,8 +325,12 @@ struct PreferencesView: View {
         }
     }
 
-    private var trimmedAPIKey: String {
+    private var trimmedOpenAIAPIKey: String {
         openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedGeminiAPIKey: String {
+        geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var modelPickerOptions: [String] {
@@ -287,20 +345,32 @@ struct PreferencesView: View {
         return options
     }
 
+    private var geminiModelPickerOptions: [String] {
+        var options = availableGeminiModels
+        let trimmedCurrentModel = geminiModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCurrentModel.isEmpty && !options.contains(trimmedCurrentModel) {
+            options.insert(trimmedCurrentModel, at: 0)
+        }
+        if options.isEmpty {
+            options = [AIWritingService.defaultGeminiModel]
+        }
+        return options
+    }
+
     private func fetchAIModels(force: Bool = false) {
-        guard !trimmedAPIKey.isEmpty else {
+        guard !trimmedOpenAIAPIKey.isEmpty else {
             aiModelFetchTask?.cancel()
             availableAIModels = []
             loadedModelsForAPIKey = ""
             isLoadingAIModels = false
             return
         }
-        if !force && loadedModelsForAPIKey == trimmedAPIKey && !availableAIModels.isEmpty {
+        if !force && loadedModelsForAPIKey == trimmedOpenAIAPIKey && !availableAIModels.isEmpty {
             return
         }
 
         aiModelFetchTask?.cancel()
-        let key = trimmedAPIKey
+        let key = trimmedOpenAIAPIKey
         isLoadingAIModels = true
 
         aiModelFetchTask = Task {
@@ -323,6 +393,47 @@ struct PreferencesView: View {
                 await MainActor.run {
                     isLoadingAIModels = false
                     aiMessage = "Could not load models. You can still type a model manually."
+                }
+            }
+        }
+    }
+
+    private func fetchGeminiModels(force: Bool = false) {
+        guard !trimmedGeminiAPIKey.isEmpty else {
+            geminiModelFetchTask?.cancel()
+            availableGeminiModels = []
+            loadedModelsForGeminiAPIKey = ""
+            isLoadingGeminiModels = false
+            return
+        }
+        if !force && loadedModelsForGeminiAPIKey == trimmedGeminiAPIKey && !availableGeminiModels.isEmpty {
+            return
+        }
+
+        geminiModelFetchTask?.cancel()
+        let key = trimmedGeminiAPIKey
+        isLoadingGeminiModels = true
+
+        geminiModelFetchTask = Task {
+            do {
+                let models = try await AIWritingService.shared.listAvailableGeminiModels(apiKey: key)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    availableGeminiModels = models
+                    loadedModelsForGeminiAPIKey = key
+                    isLoadingGeminiModels = false
+                    if geminiModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        geminiModel = models.first ?? AIWritingService.defaultGeminiModel
+                    }
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    isLoadingGeminiModels = false
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingGeminiModels = false
+                    aiMessage = "Could not load Gemini models. You can still type a model manually."
                 }
             }
         }
@@ -456,10 +567,44 @@ struct PreferencesView: View {
                         }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Model")
+                        Text("Preferred provider")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        if !trimmedAPIKey.isEmpty {
+                        Picker("Preferred provider", selection: $aiProvider) {
+                            ForEach(AIWritingProvider.allCases) { provider in
+                                Text(provider.label).tag(provider)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .pointingHandCursor()
+                        .onChange(of: aiProvider) { _, _ in
+                            scheduleAIAutosave()
+                        }
+                    }
+
+                    Toggle("Enable OpenAI", isOn: $openAIEnabled)
+                        .pointingHandCursor()
+                        .onTapGesture {
+                            cancelRecordingIfNeeded()
+                        }
+                        .onChange(of: openAIEnabled) { _, _ in
+                            scheduleAIAutosave()
+                        }
+
+                    Toggle("Enable Gemini", isOn: $geminiEnabled)
+                        .pointingHandCursor()
+                        .onTapGesture {
+                            cancelRecordingIfNeeded()
+                        }
+                        .onChange(of: geminiEnabled) { _, _ in
+                            scheduleAIAutosave()
+                        }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("OpenAI model")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        if !trimmedOpenAIAPIKey.isEmpty {
                             HStack(spacing: 8) {
                                 Picker("Model", selection: $aiModel) {
                                     ForEach(modelPickerOptions, id: \.self) { model in
@@ -502,12 +647,59 @@ struct PreferencesView: View {
                             }
                     }
 
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Gemini model")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        if !trimmedGeminiAPIKey.isEmpty {
+                            HStack(spacing: 8) {
+                                Picker("Gemini model", selection: $geminiModel) {
+                                    ForEach(geminiModelPickerOptions, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                                .labelsHidden()
+                                .onChange(of: geminiModel) { _, _ in
+                                    scheduleAIAutosave()
+                                }
+
+                                Button(isLoadingGeminiModels ? "Loading..." : "Refresh") {
+                                    fetchGeminiModels(force: true)
+                                }
+                                .pointingHandCursor()
+                                .disabled(isLoadingGeminiModels)
+                            }
+                        } else {
+                            TextField(AIWritingService.defaultGeminiModel, text: $geminiModel)
+                                .onTapGesture {
+                                    cancelRecordingIfNeeded()
+                                }
+                                .onChange(of: geminiModel) { _, _ in
+                                    scheduleAIAutosave()
+                                }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Gemini API Key")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        SecureField("AIza...", text: $geminiAPIKey)
+                            .onTapGesture {
+                                cancelRecordingIfNeeded()
+                            }
+                            .onChange(of: geminiAPIKey) { _, _ in
+                                scheduleAIAutosave()
+                                fetchGeminiModels()
+                            }
+                    }
+
                     HStack {
                         Button("Save AI Settings") {
                             saveAISettings()
                         }
                         .pointingHandCursor()
-                        Text("API key is stored in macOS Keychain.")
+                        Text("API keys are stored in macOS Keychain.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -580,11 +772,13 @@ struct PreferencesView: View {
         }
         .onAppear {
             fetchAIModels()
+            fetchGeminiModels()
         }
         .onDisappear {
             notionAutosaveTask?.cancel()
             aiAutosaveTask?.cancel()
             aiModelFetchTask?.cancel()
+            geminiModelFetchTask?.cancel()
             removeKeyMonitor()
         }
         .confirmationDialog(

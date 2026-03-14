@@ -110,6 +110,8 @@ struct MainPanel: View {
     @State private var aiPopoverTrigger: AIPopoverTrigger?
     @State private var aiCustomPrompt = ""
     @AppStorage(AIWritingService.enabledDefaultsKey) private var aiEnabled: Bool = false
+    @AppStorage(AIWritingService.openAIEnabledDefaultsKey) private var openAIEnabled: Bool = false
+    @AppStorage(AIWritingService.geminiEnabledDefaultsKey) private var geminiEnabled: Bool = false
     @AppStorage("notsy.last.selected.note.id") private var persistedSelectedNoteIDRaw: String = ""
 
     enum FocusField: Hashable {
@@ -195,6 +197,15 @@ struct MainPanel: View {
     private var statusBannerForegroundColor: Color {
         if manualSaveStatusMessage != nil { return Theme.textMuted.opacity(0.9) }
         return store.notionSyncStatusIsError ? .red.opacity(0.9) : Theme.textMuted.opacity(0.9)
+    }
+
+    private var hasExplicitProviderFlags: Bool {
+        UserDefaults.standard.object(forKey: AIWritingService.openAIEnabledDefaultsKey) != nil
+            || UserDefaults.standard.object(forKey: AIWritingService.geminiEnabledDefaultsKey) != nil
+    }
+
+    private var aiActionsEnabled: Bool {
+        aiEnabled && (openAIEnabled || geminiEnabled || !hasExplicitProviderFlags)
     }
 
     var body: some View {
@@ -736,6 +747,16 @@ struct MainPanel: View {
                 resetAIOverlay(clearSelection: false)
             }
         }
+        .onChange(of: openAIEnabled) { _, _ in
+            if !aiActionsEnabled {
+                resetAIOverlay(clearSelection: false)
+            }
+        }
+        .onChange(of: geminiEnabled) { _, _ in
+            if !aiActionsEnabled {
+                resetAIOverlay(clearSelection: false)
+            }
+        }
         .onAppear {
             sidebarRuntimeWidth = CGFloat(sidebarWidth)
             refreshSidebarPreviewCache()
@@ -1260,7 +1281,7 @@ struct MainPanel: View {
 
     @ViewBuilder
     private func aiAssistantChipGroup(note: Note) -> some View {
-        if aiEnabled {
+        if aiActionsEnabled {
             Button(action: {
                 openAIPopover(.improve)
             }) {

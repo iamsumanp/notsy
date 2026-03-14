@@ -93,6 +93,7 @@ class CustomTextView: NSTextView {
     private var hoveredTableForAddButton: NSTextTable?
     private var hoveredTableRowResizeTarget: TableRowResizeTarget?
     private var tableRowResizeSession: TableRowResizeSession?
+    private var tableCellSelectionSession: TableCellSelectionSession?
 
     private enum DetectedCodeLanguage: String {
         case swift
@@ -330,6 +331,24 @@ class CustomTextView: NSTextView {
         }
 
         let selection = selectedRange()
+        if selection.length == 0,
+           selection.location >= textStorage.length,
+           tableCursorLocation(at: textStorage.length - 1) != nil {
+            var attrs = textStorage.attributes(at: textStorage.length - 1, effectiveRange: nil)
+            if let paragraph = (attrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle {
+                paragraph.textBlocks = []
+                paragraph.textLists = []
+                if paragraph.lineSpacing == 0 {
+                    paragraph.lineSpacing = 4
+                }
+                attrs[.paragraphStyle] = paragraph
+            } else {
+                attrs[.paragraphStyle] = Self.defaultParagraphStyle()
+            }
+            typingAttributes = normalizedTypingAttributes(base: attrs)
+            return
+        }
+
         let useCurrentLocation = selection.length == 0
             && selection.location < textStorage.length
             && tableCursorLocation(at: selection.location) != nil
@@ -514,6 +533,11 @@ class CustomTextView: NSTextView {
         let row: Int
         let startPoint: NSPoint
         let initialMinimumLineHeight: CGFloat
+    }
+
+    private struct TableCellSelectionSession {
+        let paragraphRange: NSRange
+        let anchorLocation: Int
     }
 
     private struct TableNormalizationParagraph {
@@ -737,19 +761,10 @@ class CustomTextView: NSTextView {
     }
 
     private func insertionLocation(in cell: TableCursorLocation, at point: NSPoint) -> Int {
-        guard let layoutManager, let textContainer, let textStorage else {
+        guard let textStorage else {
             return cell.paragraphRange.location
         }
-        let containerPoint = NSPoint(
-            x: point.x - textContainerInset.width,
-            y: point.y - textContainerInset.height
-        )
-        var fraction: CGFloat = 0
-        let rawIndex = layoutManager.characterIndex(
-            for: containerPoint,
-            in: textContainer,
-            fractionOfDistanceBetweenInsertionPoints: &fraction
-        )
+        let rawIndex = characterIndexForInsertion(at: point)
 
         let start = cell.paragraphRange.location
         let end = max(start, NSMaxRange(cell.paragraphRange) - 1)
@@ -902,12 +917,18 @@ class CustomTextView: NSTextView {
            let cell = tableCell(at: point) {
             let targetLocation = insertionLocation(in: cell, at: point)
             setSelectedRange(NSRange(location: targetLocation, length: 0))
+            tableCellSelectionSession = TableCellSelectionSession(
+                paragraphRange: cell.paragraphRange,
+                anchorLocation: targetLocation
+            )
             if let delegate = self.delegate as? RichTextEditorView.Coordinator {
                 delegate.updateSelectionText(for: self)
             }
             resetTypingAttributesForCurrentSelection()
             return
         }
+
+        tableCellSelectionSession = nil
 
         let clickedIndex = self.characterIndexForInsertion(at: point)
         if let ns = textStorage, clickedIndex >= 0, clickedIndex < ns.length,
@@ -992,6 +1013,24 @@ class CustomTextView: NSTextView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if let cellSelection = tableCellSelectionSession {
+            let point = convert(event.locationInWindow, from: nil)
+            let rawLocation = characterIndexForInsertion(at: point)
+            let start = cellSelection.paragraphRange.location
+            let end = max(start, NSMaxRange(cellSelection.paragraphRange) - 1)
+            let clampedAnchor = min(max(start, cellSelection.anchorLocation), end)
+            let clampedLocation = min(max(start, rawLocation), end)
+            let range = NSRange(
+                location: min(clampedAnchor, clampedLocation),
+                length: abs(clampedLocation - clampedAnchor)
+            )
+            setSelectedRange(range)
+            if let delegate = self.delegate as? RichTextEditorView.Coordinator {
+                delegate.updateSelectionText(for: self)
+            }
+            return
+        }
+
         if let rowResize = tableRowResizeSession {
             let point = convert(event.locationInWindow, from: nil)
             let delta = isFlipped ? (point.y - rowResize.startPoint.y) : (rowResize.startPoint.y - point.y)
@@ -1026,6 +1065,8 @@ class CustomTextView: NSTextView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        tableCellSelectionSession = nil
+
         if tableRowResizeSession != nil {
             tableRowResizeSession = nil
             let point = convert(event.locationInWindow, from: nil)
