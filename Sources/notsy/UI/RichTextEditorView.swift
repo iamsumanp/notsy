@@ -12,8 +12,8 @@ class EditorScrollView: NSScrollView {
 
 class CustomTextView: NSTextView {
     fileprivate static let uncheckedCheckboxMarker = "☐ "
-    fileprivate static let checkedCheckboxMarker = "☑ "
-    fileprivate static let legacyCheckedCheckboxMarker = "✓ "
+    fileprivate static let checkedCheckboxMarker = "✓ "
+    fileprivate static let legacyCheckedCheckboxMarker = "☑ "
 
     static let editorFontSize: CGFloat = 15
     static let editorTextInset = NSSize(width: 8, height: 16)
@@ -973,7 +973,8 @@ class CustomTextView: NSTextView {
                 }()
                 if trimmed.hasPrefix(Self.uncheckedCheckboxMarker) {
                     self.undoManager?.beginUndoGrouping()
-                    let checkedBox = NSAttributedString(string: "☑", attributes: [
+                    let checkedMarker = String(Self.checkedCheckboxMarker.prefix(1))
+                    let checkedBox = NSAttributedString(string: checkedMarker, attributes: [
                         .font: markerFont,
                         .foregroundColor: NSColor.systemGreen
                     ])
@@ -991,7 +992,8 @@ class CustomTextView: NSTextView {
                     return
                 } else if trimmed.hasPrefix(Self.checkedCheckboxMarker) || trimmed.hasPrefix(Self.legacyCheckedCheckboxMarker) {
                     self.undoManager?.beginUndoGrouping()
-                    let whiteCircle = NSAttributedString(string: "☐", attributes: [
+                    let uncheckedMarker = String(Self.uncheckedCheckboxMarker.prefix(1))
+                    let whiteCircle = NSAttributedString(string: uncheckedMarker, attributes: [
                         .font: markerFont,
                         .foregroundColor: Theme.editorTextNSColor
                     ])
