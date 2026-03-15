@@ -25,8 +25,13 @@ class CustomTextView: NSTextView {
     private static let resizeHandleHitPadding: CGFloat = 4
     private static let resizeDragThreshold: CGFloat = 5
     private static let tableAddButtonSize: CGFloat = 20
+    private static let tableControlButtonGap: CGFloat = 6
     private static let tableRowResizeHitHeight: CGFloat = 4
     private static let minTableRowHeight: CGFloat = 18
+    private static let defaultDiffTableBodyRowHeight: CGFloat = 220
+    private static let defaultDiffTableBodyParagraphSpacing: CGFloat = 186
+    private static let slashCommandRowHeight: CGFloat = 24
+    private static let slashCommandMenuWidth: CGFloat = 200
     private static let diagonalResizeCursor: NSCursor = {
         if let symbol = NSImage(
             systemSymbolName: "arrow.up.left.and.arrow.down.right.circle.fill",
@@ -90,10 +95,24 @@ class CustomTextView: NSTextView {
     private var resizeAspectRatio: CGFloat = 1
     private var didBeginResizeDrag = false
     private var hoveredTableAddButtonRect: NSRect?
+    private var hoveredTableRemoveButtonRect: NSRect?
     private var hoveredTableForAddButton: NSTextTable?
     private var hoveredTableRowResizeTarget: TableRowResizeTarget?
     private var tableRowResizeSession: TableRowResizeSession?
     private var tableCellSelectionSession: TableCellSelectionSession?
+    private var slashCommandVisible = false
+    private var slashCommandAnchorLocation: Int?
+    private var slashCommandSelectedIndex = 0
+    private var slashCommandMenuRect: NSRect = .zero
+
+    private struct SlashCommandItem {
+        let title: String
+        let subtitle: String
+        let action: String
+    }
+    private let slashCommandItems: [SlashCommandItem] = [
+        SlashCommandItem(title: "Table", subtitle: "Insert diff table", action: "table-diff")
+    ]
 
     private enum DetectedCodeLanguage: String {
         case swift
@@ -480,10 +499,24 @@ class CustomTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if handleSlashCommandKeyEvent(event) {
+            return
+        }
+        if shouldTriggerSlashCommand(with: event) {
+            super.keyDown(with: event)
+            presentSlashCommandMenuIfPossible()
+            return
+        }
         if event.keyCode == 48, handleTableTabNavigation(outdent: event.modifierFlags.contains(.shift)) {
             return
         }
         if event.keyCode == 36, handleTableEnterInCell() {
+            return
+        }
+        if event.keyCode == 126, handleTableVerticalArrowNavigation(upward: true) {
+            return
+        }
+        if event.keyCode == 125, handleTableVerticalArrowNavigation(upward: false) {
             return
         }
         if event.keyCode == 51, handleTableBoundaryDelete(backward: true) {
@@ -509,8 +542,112 @@ class CustomTextView: NSTextView {
         let probeLocation = min(max(0, selected.location), textStorage.length - 1)
         guard tableCursorLocation(at: probeLocation) != nil else { return false }
 
-        // Keep Enter inside the same table cell.
+        // Keep Enter inside the same table cell, and continue list/checklist markers within cell lines.
+        let text = textStorage.string as NSString
+        let lineRange = text.lineRange(for: NSRange(location: selected.location, length: 0))
+        let lineString = text.substring(with: lineRange)
+        let leadingWhitespace = String(lineString.prefix(while: { $0 == " " || $0 == "\t" }))
+        let trimmedLine = lineString.trimmingCharacters(in: .whitespaces)
+
+        func checkboxContentAfterMarker(in line: String) -> String? {
+            let markers = [
+                Self.uncheckedCheckboxMarker,
+                Self.checkedCheckboxMarker,
+                Self.legacyCheckedCheckboxMarker
+            ]
+            for marker in markers where line.hasPrefix(marker) {
+                return String(line.dropFirst(marker.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let symbolMarkers = markers.compactMap { $0.first }.map { String($0) }
+            for symbol in symbolMarkers where line.hasPrefix(symbol) {
+                return String(line.dropFirst(symbol.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return nil
+        }
+
+        var prefixToContinue = ""
+        var markerTrimLength = 2
+        var contentAfterPrefix = ""
+        if let bullet = Self.bulletMarkerPrefix(in: trimmedLine) {
+            prefixToContinue = bullet
+            markerTrimLength = bullet.utf16.count
+        } else if let checkboxContent = checkboxContentAfterMarker(in: trimmedLine) {
+            prefixToContinue = Self.uncheckedCheckboxMarker
+            contentAfterPrefix = checkboxContent
+            markerTrimLength = 1
+        } else if trimmedLine.hasPrefix("- ") {
+            prefixToContinue = leadingWhitespace.isEmpty
+                ? "- "
+                : Self.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+            markerTrimLength = 2
+        } else if trimmedLine.hasPrefix("-") {
+            prefixToContinue = leadingWhitespace.isEmpty
+                ? "- "
+                : Self.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+            markerTrimLength = 1
+        }
+
+        if !prefixToContinue.isEmpty {
+            if contentAfterPrefix.isEmpty {
+                contentAfterPrefix = String(trimmedLine.dropFirst(min(markerTrimLength, trimmedLine.count)))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+            let insertionStart = selected.location
+            let inserted = contentAfterPrefix.isEmpty
+                ? "\u{2028}" + leadingWhitespace
+                : "\u{2028}" + leadingWhitespace + prefixToContinue
+            insertText(inserted, replacementRange: selected)
+            let insertedRange = NSRange(location: insertionStart, length: inserted.utf16.count)
+            textStorage.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: insertedRange)
+            textStorage.addAttribute(.strikethroughStyle, value: 0, range: insertedRange)
+            let expectedCursor = insertionStart + inserted.utf16.count
+            setSelectedRange(NSRange(location: expectedCursor, length: 0))
+            return true
+        }
+
         insertText("\u{2028}", replacementRange: selected)
+        return true
+    }
+
+    private func handleTableVerticalArrowNavigation(upward: Bool) -> Bool {
+        guard let textStorage, textStorage.length > 0 else { return false }
+        let selected = selectedRange()
+        guard selected.length == 0 else { return false }
+
+        let probeLocation = min(max(0, selected.location), textStorage.length - 1)
+        guard let cell = tableCursorLocation(at: probeLocation) else { return false }
+
+        let text = textStorage.string as NSString
+        let paragraph = cell.paragraphRange
+        let paragraphStart = paragraph.location
+        let paragraphEndExclusive = NSMaxRange(paragraph)
+        let paragraphEnd = max(paragraphStart, paragraphEndExclusive - 1)
+
+        let caret = min(max(paragraphStart, selected.location), paragraphEnd)
+        let currentLine = text.lineRange(for: NSRange(location: caret, length: 0))
+        let visualColumn = max(0, caret - currentLine.location)
+
+        let targetLine: NSRange
+        if upward {
+            if currentLine.location <= paragraphStart {
+                return true
+            }
+            let previousProbe = max(paragraphStart, currentLine.location - 1)
+            targetLine = text.lineRange(for: NSRange(location: previousProbe, length: 0))
+        } else {
+            let nextStart = NSMaxRange(currentLine)
+            if nextStart >= paragraphEndExclusive {
+                return true
+            }
+            targetLine = text.lineRange(for: NSRange(location: nextStart, length: 0))
+        }
+
+        let targetLineStart = max(paragraphStart, targetLine.location)
+        let targetLineEnd = min(paragraphEnd, max(targetLineStart, NSMaxRange(targetLine) - 1))
+        let target = min(targetLineStart + visualColumn, targetLineEnd)
+        setSelectedRange(NSRange(location: target, length: 0))
+        scrollRangeToVisible(NSRange(location: target, length: 0))
         return true
     }
 
@@ -548,6 +685,7 @@ class CustomTextView: NSTextView {
         let paragraphRange: NSRange
         let value: String
         let minimumLineHeight: CGFloat?
+        let paragraphSpacing: CGFloat
     }
 
     private struct TableNormalizationGroup {
@@ -712,8 +850,9 @@ class CustomTextView: NSTextView {
             let glyphIndex = layoutManager.glyphIndexForCharacter(at: cell.paragraphRange.location)
             rect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
         }
-        rect.origin.x += textContainerInset.width
-        rect.origin.y += textContainerInset.height
+        let origin = textContainerOrigin
+        rect.origin.x += origin.x
+        rect.origin.y += origin.y
         return rect
     }
 
@@ -764,7 +903,73 @@ class CustomTextView: NSTextView {
         guard let textStorage else {
             return cell.paragraphRange.location
         }
-        let rawIndex = characterIndexForInsertion(at: point)
+        let rawIndex: Int = {
+            guard let layoutManager, let textContainer else {
+                return characterIndexForInsertion(at: point)
+            }
+            let origin = textContainerOrigin
+            let containerPoint = NSPoint(
+                x: point.x - origin.x,
+                y: point.y - origin.y
+            )
+
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: cell.paragraphRange,
+                actualCharacterRange: nil
+            )
+            var bestLineUsedRect: NSRect?
+            var bestLineCharRange: NSRange?
+            var bestScore = CGFloat.greatestFiniteMagnitude
+
+            layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, lineGlyphRange, _ in
+                let charRange = layoutManager.characterRange(
+                    forGlyphRange: lineGlyphRange,
+                    actualGlyphRange: nil
+                )
+                let score: CGFloat
+                if containerPoint.y < usedRect.minY {
+                    score = usedRect.minY - containerPoint.y
+                } else if containerPoint.y > usedRect.maxY {
+                    score = containerPoint.y - usedRect.maxY
+                } else {
+                    score = 0
+                }
+
+                if score < bestScore {
+                    bestScore = score
+                    bestLineUsedRect = usedRect
+                    bestLineCharRange = charRange
+                }
+            }
+
+            if let lineRect = bestLineUsedRect, let lineCharRange = bestLineCharRange {
+                let probeY = min(max(containerPoint.y, lineRect.minY + 1), lineRect.maxY - 1)
+                var fraction: CGFloat = 0
+                var index = layoutManager.characterIndex(
+                    for: NSPoint(x: containerPoint.x, y: probeY),
+                    in: textContainer,
+                    fractionOfDistanceBetweenInsertionPoints: &fraction
+                )
+                if fraction > 0.5, index < textStorage.length {
+                    index += 1
+                }
+
+                let lineStart = lineCharRange.location
+                let lineEnd = max(lineStart, NSMaxRange(lineCharRange) - 1)
+                return min(max(lineStart, index), lineEnd)
+            }
+
+            var fallbackFraction: CGFloat = 0
+            var fallback = layoutManager.characterIndex(
+                for: containerPoint,
+                in: textContainer,
+                fractionOfDistanceBetweenInsertionPoints: &fallbackFraction
+            )
+            if fallbackFraction > 0.5, fallback < textStorage.length {
+                fallback += 1
+            }
+            return fallback
+        }()
 
         let start = cell.paragraphRange.location
         let end = max(start, NSMaxRange(cell.paragraphRange) - 1)
@@ -778,6 +983,11 @@ class CustomTextView: NSTextView {
         let x = frame.minX - size - 6
         let y = isFlipped ? frame.maxY + 4 : frame.minY - size - 4
         return NSRect(x: x, y: y, width: size, height: size)
+    }
+
+    private func tableRemoveButtonRect(for table: NSTextTable) -> NSRect? {
+        guard let addRect = tableAddButtonRect(for: table) else { return nil }
+        return addRect.offsetBy(dx: -(Self.tableAddButtonSize + Self.tableControlButtonGap), dy: 0)
     }
 
     private func tableRowResizeTarget(at point: NSPoint, table: NSTextTable) -> TableRowResizeTarget? {
@@ -843,9 +1053,13 @@ class CustomTextView: NSTextView {
     }
 
     private func clearHoveredTableControls() {
-        let hadState = hoveredTableForAddButton != nil || hoveredTableAddButtonRect != nil || hoveredTableRowResizeTarget != nil
+        let hadState = hoveredTableForAddButton != nil
+            || hoveredTableAddButtonRect != nil
+            || hoveredTableRemoveButtonRect != nil
+            || hoveredTableRowResizeTarget != nil
         hoveredTableForAddButton = nil
         hoveredTableAddButtonRect = nil
+        hoveredTableRemoveButtonRect = nil
         hoveredTableRowResizeTarget = nil
         if hadState {
             needsDisplay = true
@@ -853,10 +1067,141 @@ class CustomTextView: NSTextView {
         }
     }
 
+    private func clearCheckboxLineStrikethrough(at markerLocation: Int) {
+        guard let textStorage, markerLocation >= 0, markerLocation < textStorage.length else { return }
+        let text = textStorage.string as NSString
+        let lineRange = text.lineRange(for: NSRange(location: markerLocation, length: 0))
+        textStorage.addAttribute(.strikethroughStyle, value: 0, range: lineRange)
+    }
+
+    private func shouldTriggerSlashCommand(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.isEmpty else { return false }
+        guard event.characters == "/" else { return false }
+        return selectedRange().length == 0
+    }
+
+    private func validateSlashCommandAnchor() {
+        guard slashCommandVisible else { return }
+        guard let textStorage, textStorage.length > 0,
+              let anchor = slashCommandAnchorLocation,
+              anchor >= 0, anchor < textStorage.length else {
+            dismissSlashCommandMenu()
+            return
+        }
+        let text = textStorage.string as NSString
+        let value = UnicodeScalar(text.character(at: anchor))
+        if value != "/" {
+            dismissSlashCommandMenu()
+        }
+    }
+
+    private func updateSlashCommandMenuRect() {
+        guard slashCommandVisible,
+              let window,
+              let anchor = slashCommandAnchorLocation else { return }
+        let caretLocation = min(max(0, anchor + 1), max(0, (textStorage?.length ?? 0)))
+        let caretScreenRect = firstRect(forCharacterRange: NSRange(location: caretLocation, length: 0), actualRange: nil)
+        let windowPoint = window.convertPoint(fromScreen: caretScreenRect.origin)
+        let localPoint = convert(windowPoint, from: nil)
+
+        let rowHeight = Self.slashCommandRowHeight
+        let menuHeight = CGFloat(slashCommandItems.count) * rowHeight + 10
+        let width = Self.slashCommandMenuWidth
+        let proposedX = max(8, min(localPoint.x, max(8, bounds.width - width - 8)))
+        let proposedY = localPoint.y + 18
+        slashCommandMenuRect = NSRect(x: proposedX, y: proposedY, width: width, height: menuHeight)
+    }
+
+    private func presentSlashCommandMenuIfPossible() {
+        guard let textStorage else { return }
+        let cursor = selectedRange().location
+        let anchor = cursor - 1
+        guard anchor >= 0, anchor < textStorage.length else { return }
+        let text = textStorage.string as NSString
+        let value = UnicodeScalar(text.character(at: anchor))
+        guard value == "/" else { return }
+
+        slashCommandVisible = true
+        slashCommandAnchorLocation = anchor
+        slashCommandSelectedIndex = 0
+        updateSlashCommandMenuRect()
+        needsDisplay = true
+    }
+
+    private func dismissSlashCommandMenu() {
+        guard slashCommandVisible else { return }
+        slashCommandVisible = false
+        slashCommandAnchorLocation = nil
+        needsDisplay = true
+    }
+
+    private func slashCommandIndex(at point: NSPoint) -> Int? {
+        guard slashCommandVisible, slashCommandMenuRect.contains(point) else { return nil }
+        let contentTop = slashCommandMenuRect.minY + 5
+        let relativeY = point.y - contentTop
+        guard relativeY >= 0 else { return nil }
+        let index = Int(relativeY / Self.slashCommandRowHeight)
+        guard index >= 0, index < slashCommandItems.count else { return nil }
+        return index
+    }
+
+    private func executeSelectedSlashCommand() {
+        guard slashCommandVisible,
+              let anchor = slashCommandAnchorLocation,
+              slashCommandSelectedIndex >= 0,
+              slashCommandSelectedIndex < slashCommandItems.count else { return }
+
+        let command = slashCommandItems[slashCommandSelectedIndex]
+        setSelectedRange(NSRange(location: anchor, length: 1))
+        insertText("", replacementRange: selectedRange())
+        setSelectedRange(NSRange(location: anchor, length: 0))
+        dismissSlashCommandMenu()
+
+        NotificationCenter.default.post(
+            name: NSNotification.Name("NotsyToolbarAction"),
+            object: nil,
+            userInfo: ["action": command.action]
+        )
+    }
+
+    private func handleSlashCommandKeyEvent(_ event: NSEvent) -> Bool {
+        guard slashCommandVisible else { return false }
+        switch event.keyCode {
+        case 126: // up
+            slashCommandSelectedIndex = max(0, slashCommandSelectedIndex - 1)
+            needsDisplay = true
+            return true
+        case 125: // down
+            slashCommandSelectedIndex = min(slashCommandItems.count - 1, slashCommandSelectedIndex + 1)
+            needsDisplay = true
+            return true
+        case 36, 76: // return / keypad enter
+            executeSelectedSlashCommand()
+            return true
+        case 53: // escape
+            dismissSlashCommandMenu()
+            return true
+        default:
+            if let chars = event.characters, !chars.isEmpty {
+                dismissSlashCommandMenu()
+            }
+            return false
+        }
+    }
+
     private func updateHoveredTableControls(at point: NSPoint) {
         if tableRowResizeSession != nil { return }
 
-        if let hoveredRect = hoveredTableAddButtonRect, hoveredRect.insetBy(dx: -8, dy: -8).contains(point) {
+        if let addRect = hoveredTableAddButtonRect,
+           addRect.insetBy(dx: -8, dy: -8).contains(point) {
+            hoveredTableRowResizeTarget = nil
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+            return
+        }
+        if let removeRect = hoveredTableRemoveButtonRect,
+           removeRect.insetBy(dx: -8, dy: -8).contains(point) {
             hoveredTableRowResizeTarget = nil
             needsDisplay = true
             window?.invalidateCursorRects(for: self)
@@ -869,18 +1214,24 @@ class CustomTextView: NSTextView {
             if let hoveredRect = hoveredTableAddButtonRect, hoveredRect.insetBy(dx: -8, dy: -8).contains(point) {
                 return
             }
+            if let hoveredRect = hoveredTableRemoveButtonRect, hoveredRect.insetBy(dx: -8, dy: -8).contains(point) {
+                return
+            }
             clearHoveredTableControls()
             return
         }
 
         let addRect = tableAddButtonRect(for: table)
+        let removeRect = tableRemoveButtonRect(for: table)
         let resizeTarget: TableRowResizeTarget? = nil
         let changed = hoveredTableForAddButton !== table
             || hoveredTableAddButtonRect != addRect
+            || hoveredTableRemoveButtonRect != removeRect
             || hoveredTableRowResizeTarget != nil
 
         hoveredTableForAddButton = table
         hoveredTableAddButtonRect = addRect
+        hoveredTableRemoveButtonRect = removeRect
         hoveredTableRowResizeTarget = resizeTarget
         if changed {
             needsDisplay = true
@@ -890,7 +1241,28 @@ class CustomTextView: NSTextView {
 
     override func mouseDown(with event: NSEvent) {
         let point = self.convert(event.locationInWindow, from: nil)
+        if slashCommandVisible {
+            if let index = slashCommandIndex(at: point) {
+                slashCommandSelectedIndex = index
+                executeSelectedSlashCommand()
+                return
+            }
+            dismissSlashCommandMenu()
+        }
         updateHoveredTableControls(at: point)
+
+        if let removeRect = hoveredTableRemoveButtonRect, removeRect.insetBy(dx: -4, dy: -4).contains(point) {
+            if let table = hoveredTableForAddButton,
+               let anchor = tableCursorLocations(for: table).last {
+                setSelectedRange(NSRange(location: anchor.paragraphRange.location, length: 0))
+            }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotsyToolbarAction"),
+                object: nil,
+                userInfo: ["action": "table-row-remove"]
+            )
+            return
+        }
 
         if let addRect = hoveredTableAddButtonRect, addRect.insetBy(dx: -4, dy: -4).contains(point) {
             if let table = hoveredTableForAddButton,
@@ -980,6 +1352,7 @@ class CustomTextView: NSTextView {
                     ])
                     if let textStorage = self.textStorage {
                         textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: checkedBox)
+                        clearCheckboxLineStrikethrough(at: circleLocation)
                         // Force the space immediately after the dot to be white so typing inherits white
                         if circleLocation + 1 < textStorage.length {
                             textStorage.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: circleLocation + 1, length: 1))
@@ -999,6 +1372,7 @@ class CustomTextView: NSTextView {
                     ])
                     if let textStorage = self.textStorage {
                         textStorage.replaceCharacters(in: NSRange(location: circleLocation, length: 1), with: whiteCircle)
+                        clearCheckboxLineStrikethrough(at: circleLocation)
                         if circleLocation + 1 < textStorage.length {
                             textStorage.addAttribute(.foregroundColor, value: Theme.editorTextNSColor, range: NSRange(location: circleLocation + 1, length: 1))
                         }
@@ -1120,6 +1494,8 @@ class CustomTextView: NSTextView {
         updateHoveredAttachment(at: point)
         if let addRect = hoveredTableAddButtonRect, addRect.contains(point) {
             NSCursor.pointingHand.set()
+        } else if let removeRect = hoveredTableRemoveButtonRect, removeRect.contains(point) {
+            NSCursor.pointingHand.set()
         } else if hoveredTableRowResizeTarget?.hitRect.contains(point) == true {
             NSCursor.resizeUpDown.set()
         } else if isPointOverResizeHandle(point) {
@@ -1131,6 +1507,8 @@ class CustomTextView: NSTextView {
     override func cursorUpdate(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if let addRect = hoveredTableAddButtonRect, addRect.contains(point) {
+            NSCursor.pointingHand.set()
+        } else if let removeRect = hoveredTableRemoveButtonRect, removeRect.contains(point) {
             NSCursor.pointingHand.set()
         } else if hoveredTableRowResizeTarget?.hitRect.contains(point) == true {
             NSCursor.resizeUpDown.set()
@@ -1159,6 +1537,9 @@ class CustomTextView: NSTextView {
         if let addRect = hoveredTableAddButtonRect {
             addCursorRect(addRect, cursor: .pointingHand)
         }
+        if let removeRect = hoveredTableRemoveButtonRect {
+            addCursorRect(removeRect, cursor: .pointingHand)
+        }
         if let rowTarget = hoveredTableRowResizeTarget {
             addCursorRect(rowTarget.hitRect, cursor: .resizeUpDown)
         }
@@ -1169,6 +1550,8 @@ class CustomTextView: NSTextView {
         normalizeTableStructuresIfNeeded()
         normalizeImageAttachmentsIfNeeded()
         refreshDetectedLinks()
+        validateSlashCommandAnchor()
+        updateSlashCommandMenuRect()
         if let pendingEditedRange {
             applyCodeHighlightingForEditedRange(pendingEditedRange, preferredLanguage: nil)
             self.pendingEditedRange = nil
@@ -1215,7 +1598,8 @@ class CustomTextView: NSTextView {
                 column: tableBlock.startingColumn,
                 paragraphRange: paragraphRange,
                 value: singleLine,
-                minimumLineHeight: paragraph.minimumLineHeight > 0 ? paragraph.minimumLineHeight : nil
+                minimumLineHeight: paragraph.minimumLineHeight > 0 ? paragraph.minimumLineHeight : nil,
+                paragraphSpacing: paragraph.paragraphSpacing
             )
 
             let groupID = ObjectIdentifier(tableBlock.table)
@@ -1255,6 +1639,7 @@ class CustomTextView: NSTextView {
             var valueByKey: [String: String] = [:]
             var countByKey: [String: Int] = [:]
             var minimumLineHeightByRow: [Int: CGFloat] = [:]
+            var paragraphSpacingByRow: [Int: CGFloat] = [:]
             var hasIrregularBlock = false
 
             for paragraph in group.paragraphs.sorted(by: { $0.paragraphRange.location < $1.paragraphRange.location }) {
@@ -1265,6 +1650,12 @@ class CustomTextView: NSTextView {
                     minimumLineHeightByRow[paragraph.row] = max(
                         minimumLineHeightByRow[paragraph.row] ?? 0,
                         minimumLineHeight
+                    )
+                }
+                if paragraph.paragraphSpacing > 0 {
+                    paragraphSpacingByRow[paragraph.row] = max(
+                        paragraphSpacingByRow[paragraph.row] ?? 0,
+                        paragraph.paragraphSpacing
                     )
                 }
 
@@ -1285,7 +1676,28 @@ class CustomTextView: NSTextView {
             let hasDuplicates = countByKey.values.contains(where: { $0 > 1 })
             let hasMissingCells = countByKey.keys.count != expectedCellCount
             let hasColumnMismatch = group.table.numberOfColumns != columnCount
-            let shouldNormalize = hasDuplicates || hasMissingCells || hasIrregularBlock || hasColumnMismatch
+            let isDiffTemplateTable = rowCount == 2
+                && columnCount == 2
+                && valueByKey["0:0"] == "Note A"
+                && valueByKey["0:1"] == "Note B"
+            let hasLegacyDiffTemplateBodyHeight = isDiffTemplateTable
+                && (minimumLineHeightByRow[1] ?? 0) >= Self.defaultDiffTableBodyRowHeight
+            if hasLegacyDiffTemplateBodyHeight {
+                minimumLineHeightByRow.removeValue(forKey: 1)
+            }
+
+            let hasCompactDiffTemplateBody = isDiffTemplateTable
+                && (paragraphSpacingByRow[1] ?? 0) < Self.defaultDiffTableBodyParagraphSpacing
+            if hasCompactDiffTemplateBody {
+                paragraphSpacingByRow[1] = Self.defaultDiffTableBodyParagraphSpacing
+            }
+
+            let shouldNormalize = hasDuplicates
+                || hasMissingCells
+                || hasIrregularBlock
+                || hasColumnMismatch
+                || hasLegacyDiffTemplateBodyHeight
+                || hasCompactDiffTemplateBody
             guard shouldNormalize else { continue }
 
             let baseLocation = min(max(0, group.tableRange.location), textStorage.length - 1)
@@ -1309,6 +1721,7 @@ class CustomTextView: NSTextView {
                 valueByKey: valueByKey,
                 baseAttributes: baseAttributes,
                 minimumLineHeightByRow: minimumLineHeightByRow,
+                paragraphSpacingByRow: paragraphSpacingByRow,
                 borderColor: borderColor,
                 initialRow: targetRow,
                 initialColumn: targetColumn
@@ -1367,6 +1780,7 @@ class CustomTextView: NSTextView {
         valueByKey: [String: String],
         baseAttributes: [NSAttributedString.Key: Any],
         minimumLineHeightByRow: [Int: CGFloat],
+        paragraphSpacingByRow: [Int: CGFloat],
         borderColor: NSColor,
         initialRow: Int?,
         initialColumn: Int?
@@ -1405,11 +1819,16 @@ class CustomTextView: NSTextView {
                 block.setBorderColor(borderColor, for: .minY)
                 block.setBorderColor(borderColor, for: .maxY)
                 block.setWidth(1.0, type: .absoluteValueType, for: .border)
-                block.setWidth(5, type: .absoluteValueType, for: .padding)
+                block.setWidth(6, type: .absoluteValueType, for: .padding)
 
                 let paragraphStyle = NSMutableParagraphStyle()
                 paragraphStyle.textBlocks = [block]
                 paragraphStyle.lineSpacing = 4
+                if let paragraphSpacing = paragraphSpacingByRow[row], paragraphSpacing > 0 {
+                    paragraphStyle.paragraphSpacing = paragraphSpacing
+                } else if row > 0 {
+                    paragraphStyle.paragraphSpacing = 4
+                }
                 if let minimumLineHeight = minimumLineHeightByRow[row], minimumLineHeight > 0 {
                     paragraphStyle.minimumLineHeight = minimumLineHeight
                 }
@@ -1455,6 +1874,7 @@ class CustomTextView: NSTextView {
         let replacementRange: NSRange
         let valuesByKey: [String: String]
         let minimumLineHeightByRow: [Int: CGFloat]
+        let paragraphSpacingByRow: [Int: CGFloat]
         let borderColor: NSColor
         let currentRow: Int
         let currentColumn: Int
@@ -1464,10 +1884,13 @@ class CustomTextView: NSTextView {
         rows: Int,
         columns: Int,
         seedValues: [String: String] = [:],
+        minimumLineHeightByRow: [Int: CGFloat] = [:],
+        paragraphSpacingByRow: [Int: CGFloat] = [:],
         focusRow: Int = 0,
         focusColumn: Int = 0
     ) -> Bool {
         guard rows > 0, columns > 0, let textStorage else { return false }
+        guard !isCursorInTable() else { return false }
         let selection = selectedRange()
         let baseIndex = min(max(0, selection.location), max(0, textStorage.length - 1))
         let sourceAttributes = textStorage.length > 0 ? textStorage.attributes(at: baseIndex, effectiveRange: nil) : typingAttributes
@@ -1481,7 +1904,8 @@ class CustomTextView: NSTextView {
             columns: columns,
             valueByKey: seedValues,
             baseAttributes: baseAttributes,
-            minimumLineHeightByRow: [:],
+            minimumLineHeightByRow: minimumLineHeightByRow,
+            paragraphSpacingByRow: paragraphSpacingByRow,
             borderColor: NSColor(calibratedWhite: 0.56, alpha: 0.82),
             initialRow: targetRow,
             initialColumn: targetColumn
@@ -1499,13 +1923,23 @@ class CustomTextView: NSTextView {
             "0:0": "Note A",
             "0:1": "Note B"
         ]
+        let paragraphSpacingByRow: [Int: CGFloat] = [1: Self.defaultDiffTableBodyParagraphSpacing]
+        guard !isCursorInTable() else { return false }
         return insertNewTable(
             rows: 2,
             columns: 2,
             seedValues: seeds,
+            paragraphSpacingByRow: paragraphSpacingByRow,
             focusRow: 1,
             focusColumn: 0
         )
+    }
+
+    func isCursorInTable() -> Bool {
+        guard let textStorage, textStorage.length > 0 else { return false }
+        let selected = selectedRange()
+        let probeLocation = min(max(0, selected.location), textStorage.length - 1)
+        return tableCursorLocation(at: probeLocation) != nil
     }
 
     func addRowToCurrentTable() -> Bool {
@@ -1516,6 +1950,7 @@ class CustomTextView: NSTextView {
         let newRowCount = context.rowCount + 1
         var mappedValues: [String: String] = [:]
         var mappedMinimumLineHeightByRow: [Int: CGFloat] = [:]
+        var mappedParagraphSpacingByRow: [Int: CGFloat] = [:]
 
         for row in 0..<context.rowCount {
             let mappedRow = row >= insertionRow ? row + 1 : row
@@ -1528,6 +1963,9 @@ class CustomTextView: NSTextView {
             if let minimumLineHeight = context.minimumLineHeightByRow[row], minimumLineHeight > 0 {
                 mappedMinimumLineHeightByRow[mappedRow] = minimumLineHeight
             }
+            if let paragraphSpacing = context.paragraphSpacingByRow[row], paragraphSpacing > 0 {
+                mappedParagraphSpacingByRow[mappedRow] = paragraphSpacing
+            }
         }
 
         return applyTableMutation(
@@ -1536,6 +1974,7 @@ class CustomTextView: NSTextView {
             columns: context.columnCount,
             valuesByKey: mappedValues,
             minimumLineHeightByRow: mappedMinimumLineHeightByRow,
+            paragraphSpacingByRow: mappedParagraphSpacingByRow,
             focusRow: insertionRow,
             focusColumn: 0
         )
@@ -1551,6 +1990,7 @@ class CustomTextView: NSTextView {
         let newRowCount = context.rowCount - 1
         var mappedValues: [String: String] = [:]
         var mappedMinimumLineHeightByRow: [Int: CGFloat] = [:]
+        var mappedParagraphSpacingByRow: [Int: CGFloat] = [:]
 
         for row in 0..<context.rowCount {
             if row == targetRow { continue }
@@ -1564,6 +2004,9 @@ class CustomTextView: NSTextView {
             if let minimumLineHeight = context.minimumLineHeightByRow[row], minimumLineHeight > 0 {
                 mappedMinimumLineHeightByRow[mappedRow] = minimumLineHeight
             }
+            if let paragraphSpacing = context.paragraphSpacingByRow[row], paragraphSpacing > 0 {
+                mappedParagraphSpacingByRow[mappedRow] = paragraphSpacing
+            }
         }
 
         let focusRow = min(context.currentRow, max(0, newRowCount - 1))
@@ -1574,8 +2017,33 @@ class CustomTextView: NSTextView {
             columns: context.columnCount,
             valuesByKey: mappedValues,
             minimumLineHeightByRow: mappedMinimumLineHeightByRow,
+            paragraphSpacingByRow: mappedParagraphSpacingByRow,
             focusRow: focusRow,
             focusColumn: focusColumn
+        )
+    }
+
+    func removeCurrentTable() -> Bool {
+        normalizeTableStructuresIfNeeded()
+        guard let context = currentTableMutationContext() else { return false }
+        guard let textStorage else { return false }
+
+        let sourceIndex = context.replacementRange.location > 0
+            ? context.replacementRange.location - 1
+            : min(context.replacementRange.location, max(0, textStorage.length - 1))
+        let sourceAttributes = textStorage.length > 0
+            ? textStorage.attributes(at: sourceIndex, effectiveRange: nil)
+            : typingAttributes
+        var replacementAttributes = normalizedTypingAttributes(base: sourceAttributes)
+        replacementAttributes[.paragraphStyle] = Self.defaultParagraphStyle()
+        let replacement = NSAttributedString(
+            string: "\n",
+            attributes: replacementAttributes
+        )
+        return applyTableEdit(
+            replacing: context.replacementRange,
+            with: replacement,
+            caretLocation: context.replacementRange.location
         )
     }
 
@@ -1598,6 +2066,7 @@ class CustomTextView: NSTextView {
 
         var valuesByKey: [String: String] = [:]
         var minimumLineHeightByRow: [Int: CGFloat] = [:]
+        var paragraphSpacingByRow: [Int: CGFloat] = [:]
         for cell in cells {
             let key = "\(cell.row):\(cell.column)"
             let value = tableCellValue(for: cell.paragraphRange)
@@ -1606,6 +2075,9 @@ class CustomTextView: NSTextView {
             }
             if let minimumLineHeight = minimumLineHeight(at: cell.paragraphRange.location), minimumLineHeight > 0 {
                 minimumLineHeightByRow[cell.row] = max(minimumLineHeightByRow[cell.row] ?? 0, minimumLineHeight)
+            }
+            if let paragraphSpacing = paragraphSpacing(at: cell.paragraphRange.location), paragraphSpacing > 0 {
+                paragraphSpacingByRow[cell.row] = max(paragraphSpacingByRow[cell.row] ?? 0, paragraphSpacing)
             }
         }
 
@@ -1619,6 +2091,7 @@ class CustomTextView: NSTextView {
             replacementRange: replacementRange,
             valuesByKey: valuesByKey,
             minimumLineHeightByRow: minimumLineHeightByRow,
+            paragraphSpacingByRow: paragraphSpacingByRow,
             borderColor: borderColor,
             currentRow: current.row,
             currentColumn: current.column
@@ -1645,12 +2118,21 @@ class CustomTextView: NSTextView {
         return minimum > 0 ? minimum : nil
     }
 
+    private func paragraphSpacing(at location: Int) -> CGFloat? {
+        guard let textStorage, textStorage.length > 0 else { return nil }
+        let safeLocation = min(max(0, location), textStorage.length - 1)
+        let paragraph = textStorage.attribute(.paragraphStyle, at: safeLocation, effectiveRange: nil) as? NSParagraphStyle
+        let spacing = paragraph?.paragraphSpacing ?? 0
+        return spacing > 0 ? spacing : nil
+    }
+
     private func applyTableMutation(
         context: TableMutationContext,
         rows: Int,
         columns: Int,
         valuesByKey: [String: String],
         minimumLineHeightByRow: [Int: CGFloat],
+        paragraphSpacingByRow: [Int: CGFloat],
         focusRow: Int,
         focusColumn: Int
     ) -> Bool {
@@ -1668,6 +2150,7 @@ class CustomTextView: NSTextView {
             valueByKey: valuesByKey,
             baseAttributes: baseAttributes,
             minimumLineHeightByRow: minimumLineHeightByRow,
+            paragraphSpacingByRow: paragraphSpacingByRow,
             borderColor: context.borderColor,
             initialRow: clampedRow,
             initialColumn: clampedColumn
@@ -2551,6 +3034,52 @@ class CustomTextView: NSTextView {
         insertText(expectedBullet, replacementRange: NSRange(location: markerLocation, length: currentBullet.utf16.count))
     }
 
+    private func drawSlashCommandMenu(in dirtyRect: NSRect) {
+        guard slashCommandVisible else { return }
+        updateSlashCommandMenuRect()
+        guard slashCommandMenuRect.intersects(dirtyRect) else { return }
+
+        let container = NSBezierPath(roundedRect: slashCommandMenuRect, xRadius: 8, yRadius: 8)
+        NSColor(calibratedWhite: 0.10, alpha: 0.96).setFill()
+        container.fill()
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        container.lineWidth = 1
+        container.stroke()
+
+        let contentInset: CGFloat = 5
+        let rowHeight = Self.slashCommandRowHeight
+        for (index, item) in slashCommandItems.enumerated() {
+            let rowRect = NSRect(
+                x: slashCommandMenuRect.minX + contentInset,
+                y: slashCommandMenuRect.minY + contentInset + CGFloat(index) * rowHeight,
+                width: slashCommandMenuRect.width - contentInset * 2,
+                height: rowHeight
+            )
+            if index == slashCommandSelectedIndex {
+                let highlight = NSBezierPath(roundedRect: rowRect, xRadius: 6, yRadius: 6)
+                NSColor(calibratedRed: 0.35, green: 0.55, blue: 0.98, alpha: 0.22).setFill()
+                highlight.fill()
+            }
+
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: NSColor.white
+            ]
+            let subtitleAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.white.withAlphaComponent(0.65)
+            ]
+            (item.title as NSString).draw(
+                at: NSPoint(x: rowRect.minX + 8, y: rowRect.minY + 12),
+                withAttributes: titleAttrs
+            )
+            (item.subtitle as NSString).draw(
+                at: NSPoint(x: rowRect.minX + 8, y: rowRect.minY + 2),
+                withAttributes: subtitleAttrs
+            )
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
@@ -2611,6 +3140,25 @@ class CustomTextView: NSTextView {
             NSColor.white.withAlphaComponent(0.95).setStroke()
             plus.stroke()
         }
+
+        if let removeRect = hoveredTableRemoveButtonRect, removeRect.intersects(dirtyRect) {
+            let circle = NSBezierPath(ovalIn: removeRect)
+            NSColor(calibratedWhite: 0.18, alpha: 0.95).setFill()
+            circle.fill()
+            NSColor.white.withAlphaComponent(0.55).setStroke()
+            circle.lineWidth = 1
+            circle.stroke()
+
+            let minus = NSBezierPath()
+            minus.lineWidth = 1.6
+            minus.lineCapStyle = .round
+            minus.move(to: NSPoint(x: removeRect.midX - 4, y: removeRect.midY))
+            minus.line(to: NSPoint(x: removeRect.midX + 4, y: removeRect.midY))
+            NSColor.white.withAlphaComponent(0.95).setStroke()
+            minus.stroke()
+        }
+
+        drawSlashCommandMenu(in: dirtyRect)
     }
 
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
@@ -2623,7 +3171,37 @@ class CustomTextView: NSTextView {
         // When cursor sits on an attachment line, AppKit can report a very tall caret rect.
         // Clamp it to a normal text line height so typing next to images feels natural.
         if caretRect.height > normalHeight * 1.8 {
-            if isFlipped {
+            let selected = selectedRange()
+            let probeLocation: Int? = {
+                guard let textStorage, textStorage.length > 0 else { return nil }
+                let clamped = min(max(0, selected.location), textStorage.length - 1)
+                return clamped
+            }()
+
+            if let probeLocation,
+               tableCursorLocation(at: probeLocation) != nil,
+               let layoutManager {
+                let origin = textContainerOrigin
+                let glyphIndex = layoutManager.glyphIndexForCharacter(at: probeLocation)
+                var usedRect = layoutManager.lineFragmentUsedRect(
+                    forGlyphAt: glyphIndex,
+                    effectiveRange: nil,
+                    withoutAdditionalLayout: true
+                )
+                usedRect.origin.x += origin.x
+                usedRect.origin.y += origin.y
+                if usedRect.height > 0 {
+                    if isFlipped {
+                        caretRect.origin.y = usedRect.maxY - normalHeight
+                    } else {
+                        caretRect.origin.y = usedRect.minY
+                    }
+                } else if isFlipped {
+                    caretRect.origin.y = caretRect.minY + 2
+                } else {
+                    caretRect.origin.y = caretRect.maxY - normalHeight - 2
+                }
+            } else if isFlipped {
                 caretRect.origin.y = caretRect.minY + 2
             } else {
                 caretRect.origin.y = caretRect.maxY - normalHeight - 2
@@ -2855,6 +3433,8 @@ struct RichTextEditorView: NSViewRepresentable {
                 addRowInCurrentTable()
             } else if action == "table-row-remove" {
                 removeRowInCurrentTable()
+            } else if action == "table-remove" {
+                removeCurrentTable()
             } else if action == "font-system" || action == "font-sans" {
                 applyFontStyle(.system)
             } else if action == "font-serif" {
@@ -3814,6 +4394,12 @@ struct RichTextEditorView: NSViewRepresentable {
             saveState()
         }
 
+        private func removeCurrentTable() {
+            guard let textView = self.textView as? CustomTextView else { return }
+            guard textView.removeCurrentTable() else { return }
+            saveState()
+        }
+
         private func insertTable(rows: Int, columns: Int) {
             guard let textView = self.textView as? CustomTextView else { return }
             guard textView.insertNewTable(rows: rows, columns: columns) else { return }
@@ -3931,6 +4517,9 @@ struct RichTextEditorView: NSViewRepresentable {
                 value: checked ? NSColor.systemGreen : Theme.editorTextNSColor,
                 range: markerRange
             )
+            let text = textStorage.string as NSString
+            let lineRange = text.lineRange(for: NSRange(location: markerLocation, length: 0))
+            textStorage.addAttribute(.strikethroughStyle, value: 0, range: lineRange)
         }
 
         private func checkboxMarkerFont(in textView: NSTextView, markerLocation: Int) -> NSFont {
@@ -4093,6 +4682,7 @@ struct RichTextEditorView: NSViewRepresentable {
             var isStrikethrough = false
             var isBullet = false
             var isCheckbox = false
+            var isInTable = false
             var fontStyle: EditorFontStyle = .system
             
             if let font = attrs[.font] as? NSFont {
@@ -4121,10 +4711,19 @@ struct RichTextEditorView: NSViewRepresentable {
                 let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
                 let lineString = text.substring(with: lineRange)
                 let trimmed = lineString.trimmingCharacters(in: .whitespaces)
-                if CustomTextView.bulletMarkerPrefix(in: trimmed) != nil { isBullet = true }
+                if CustomTextView.bulletMarkerPrefix(in: trimmed) != nil || trimmed.hasPrefix("-") {
+                    isBullet = true
+                }
                 else if trimmed.hasPrefix(CustomTextView.uncheckedCheckboxMarker)
                     || trimmed.hasPrefix(CustomTextView.checkedCheckboxMarker)
                     || trimmed.hasPrefix(CustomTextView.legacyCheckedCheckboxMarker) { isCheckbox = true }
+                if let style = textView.textStorage?.attribute(
+                    .paragraphStyle,
+                    at: min(location, max(0, text.length - 1)),
+                    effectiveRange: nil
+                ) as? NSParagraphStyle {
+                    isInTable = style.textBlocks.contains(where: { $0 is NSTextTableBlock })
+                }
             }
 
             let activeColor: NSColor = {
@@ -4143,6 +4742,7 @@ struct RichTextEditorView: NSViewRepresentable {
                     isStrikethrough: isStrikethrough,
                     isBullet: isBullet,
                     isCheckbox: isCheckbox,
+                    isInTable: isInTable,
                     fontStyle: fontStyle,
                     hasSelection: hasSelection
                 )
@@ -4238,24 +4838,55 @@ struct RichTextEditorView: NSViewRepresentable {
             }
             
             let trimmedLine = lineString.trimmingCharacters(in: .whitespaces)
+
+            func checkboxContentAfterMarker(in line: String) -> String? {
+                let markers = [
+                    CustomTextView.uncheckedCheckboxMarker,
+                    CustomTextView.checkedCheckboxMarker,
+                    CustomTextView.legacyCheckedCheckboxMarker
+                ]
+                for marker in markers where line.hasPrefix(marker) {
+                    return String(line.dropFirst(marker.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+
+                let symbolMarkers = markers.compactMap { $0.first }.map { String($0) }
+                for symbol in symbolMarkers where line.hasPrefix(symbol) {
+                    return String(line.dropFirst(symbol.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                return nil
+            }
             
             var prefixToContinue = ""
-            if let bullet = CustomTextView.bulletMarkerPrefix(in: trimmedLine) { prefixToContinue = bullet }
-            else if trimmedLine.hasPrefix(CustomTextView.uncheckedCheckboxMarker)
-                || trimmedLine.hasPrefix(CustomTextView.checkedCheckboxMarker)
-                || trimmedLine.hasPrefix(CustomTextView.legacyCheckedCheckboxMarker) {
+            var markerTrimLength = 2
+            var contentAfterPrefix = ""
+            if let bullet = CustomTextView.bulletMarkerPrefix(in: trimmedLine) {
+                prefixToContinue = bullet
+                markerTrimLength = bullet.utf16.count
+            }
+            else if let checkboxContent = checkboxContentAfterMarker(in: trimmedLine) {
                 prefixToContinue = CustomTextView.uncheckedCheckboxMarker
+                contentAfterPrefix = checkboxContent
+                markerTrimLength = 1
             }
             else if trimmedLine.hasPrefix("- ") {
                 prefixToContinue = leadingWhitespace.isEmpty
                     ? "- "
                     : CustomTextView.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+                markerTrimLength = 2
+            } else if trimmedLine.hasPrefix("-") {
+                prefixToContinue = leadingWhitespace.isEmpty
+                    ? "- "
+                    : CustomTextView.bulletMarker(forLeadingWhitespace: leadingWhitespace)
+                markerTrimLength = 1
             }
             
             if !prefixToContinue.isEmpty {
-                let textAfterPrefix = trimmedLine.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines)
+                if contentAfterPrefix.isEmpty {
+                    contentAfterPrefix = String(trimmedLine.dropFirst(min(markerTrimLength, trimmedLine.count)))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
                 
-                if textAfterPrefix.isEmpty {
+                if contentAfterPrefix.isEmpty {
                     // Empty list item -> Remove the list and outdent or exit
                     textView.undoManager?.beginUndoGrouping()
                     
@@ -4286,6 +4917,13 @@ struct RichTextEditorView: NSViewRepresentable {
                         value: Theme.editorTextNSColor,
                         range: NSRange(location: insertionStart, length: insertedPrefix.utf16.count)
                     )
+                    textView.textStorage?.addAttribute(
+                        .strikethroughStyle,
+                        value: 0,
+                        range: NSRange(location: insertionStart, length: insertedPrefix.utf16.count)
+                    )
+                    let expectedCursor = insertionStart + insertedPrefix.utf16.count
+                    textView.setSelectedRange(NSRange(location: expectedCursor, length: 0))
                     
                     // If it's a green checked dot we need to make sure the newly inserted one is white
                     let newCursor = textView.selectedRange()

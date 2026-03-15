@@ -15,6 +15,7 @@ struct EditorState: Equatable {
     var isStrikethrough: Bool = false
     var isBullet: Bool = false
     var isCheckbox: Bool = false
+    var isInTable: Bool = false
     var fontStyle: EditorFontStyle = .system
     var hasSelection: Bool = false
 }
@@ -2030,10 +2031,14 @@ struct MainPanel: View {
 
                 Menu {
                     Button("Insert 3x3 Table") { postToolbarAction("table-insert") }
+                        .disabled(editorState.isInTable)
                     Button("Insert Diff Table") { postToolbarAction("table-diff") }
+                        .disabled(editorState.isInTable)
                     Divider()
                     Button("Add Row") { postToolbarAction("table-row-add") }
                     Button("Remove Row") { postToolbarAction("table-row-remove") }
+                    Button("Remove Table") { postToolbarAction("table-remove") }
+                        .disabled(!editorState.isInTable)
                 } label: {
                     Image(systemName: "tablecells")
                         .font(.system(size: 11, weight: .semibold))
