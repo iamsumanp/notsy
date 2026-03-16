@@ -338,6 +338,13 @@ class CustomTextView: NSTextView {
         let minComponent = min(red, green, blue)
         let saturation = maxComponent > 0 ? (maxComponent - minComponent) / maxComponent : 0
         let brightness = maxComponent
+        let relativeLuminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+        if rgb.alphaComponent < 0.8 {
+            return true
+        }
+        if relativeLuminance < 0.35 {
+            return true
+        }
         return brightness < 0.28 && saturation < 0.18
     }
 
