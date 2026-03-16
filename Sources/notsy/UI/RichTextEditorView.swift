@@ -300,7 +300,7 @@ class CustomTextView: NSTextView {
                 let sourceFont = (attrs[.font] as? NSFont) ?? NSFont.systemFont(ofSize: Self.editorFontSize)
                 normalized[.font] = editorDefaultFontPreservingTraits(from: sourceFont)
                 if let sourceColor = attrs[.foregroundColor] as? NSColor {
-                    normalized[.foregroundColor] = areColorsEquivalent(sourceColor, .systemGreen)
+                    normalized[.foregroundColor] = shouldNormalizePastedForegroundColor(sourceColor)
                         ? Theme.editorTextNSColor
                         : sourceColor
                 } else {
@@ -321,6 +321,24 @@ class CustomTextView: NSTextView {
         }
 
         return mutable
+    }
+
+    private func shouldNormalizePastedForegroundColor(_ color: NSColor) -> Bool {
+        if areColorsEquivalent(color, .systemGreen) {
+            return true
+        }
+        guard Theme.preferredColorScheme == .dark,
+              let rgb = color.usingColorSpace(.deviceRGB) else {
+            return false
+        }
+        let red = rgb.redComponent
+        let green = rgb.greenComponent
+        let blue = rgb.blueComponent
+        let maxComponent = max(red, green, blue)
+        let minComponent = min(red, green, blue)
+        let saturation = maxComponent > 0 ? (maxComponent - minComponent) / maxComponent : 0
+        let brightness = maxComponent
+        return brightness < 0.28 && saturation < 0.18
     }
 
     private func editorDefaultFontPreservingTraits(from font: NSFont) -> NSFont {
