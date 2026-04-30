@@ -5,6 +5,7 @@ enum NotsyThemeVariant: String, CaseIterable {
     case bluish
     case pinkish
     case greenish
+    case quiet
 
     var label: String {
         switch self {
@@ -12,6 +13,7 @@ enum NotsyThemeVariant: String, CaseIterable {
         case .bluish: return "Midnight"
         case .pinkish: return "Graphite"
         case .greenish: return "Slate"
+        case .quiet: return "Quiet"
         }
     }
 }
@@ -29,6 +31,17 @@ struct ThemePalette {
     let calloutBg: Color
     let editorText: NSColor
     let preferredColorScheme: ColorScheme
+    // Quiet-specific tones (used only by Quiet sidebar/editor accents).
+    // Other themes can mirror existing values; downstream code reads these
+    // via Theme.q* helpers when isQuiet is true.
+    let qAccent: Color
+    let qRowTitle: Color
+    let qRowTitleActive: Color
+    let qSecondary: Color
+    let qMuted: Color
+    let qFaint: Color
+    let qHairline: Color
+    let qActiveBg: Color
 }
 
 struct Theme {
@@ -39,7 +52,21 @@ struct Theme {
         return NotsyThemeVariant(rawValue: raw) ?? .bluish
     }
 
+    static var isQuiet: Bool { variant == .quiet }
+
     static func palette(for variant: NotsyThemeVariant) -> ThemePalette {
+        // Default Quiet tones — overridden in the .quiet case below.
+        let defaultQAccent = Color(red: 0.78, green: 0.60, blue: 0.41)
+        let defaultQ: (rowTitle: Color, rowTitleActive: Color, secondary: Color, muted: Color, faint: Color, hairline: Color, activeBg: Color) = (
+            rowTitle: Color(red: 0.66, green: 0.63, blue: 0.58),
+            rowTitleActive: Color(red: 0.96, green: 0.94, blue: 0.89),
+            secondary: Color(red: 0.78, green: 0.76, blue: 0.71),
+            muted: Color(red: 0.48, green: 0.45, blue: 0.42),
+            faint: Color(red: 0.36, green: 0.34, blue: 0.31),
+            hairline: Color(red: 0.13, green: 0.12, blue: 0.11),
+            activeBg: Color(red: 0.14, green: 0.13, blue: 0.11)
+        )
+
         switch variant {
         case .light:
             return ThemePalette(
@@ -54,7 +81,15 @@ struct Theme {
                 pinBg: Color.green.opacity(0.2),
                 calloutBg: Color(red: 0.86, green: 0.90, blue: 0.98),
                 editorText: NSColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1),
-                preferredColorScheme: .light
+                preferredColorScheme: .light,
+                qAccent: defaultQAccent,
+                qRowTitle: defaultQ.rowTitle,
+                qRowTitleActive: defaultQ.rowTitleActive,
+                qSecondary: defaultQ.secondary,
+                qMuted: defaultQ.muted,
+                qFaint: defaultQ.faint,
+                qHairline: defaultQ.hairline,
+                qActiveBg: defaultQ.activeBg
             )
         case .bluish:
             return ThemePalette(
@@ -69,7 +104,15 @@ struct Theme {
                 pinBg: Color.green.opacity(0.2),
                 calloutBg: Color(red: 0.15, green: 0.18, blue: 0.28),
                 editorText: NSColor.white,
-                preferredColorScheme: .dark
+                preferredColorScheme: .dark,
+                qAccent: defaultQAccent,
+                qRowTitle: defaultQ.rowTitle,
+                qRowTitleActive: defaultQ.rowTitleActive,
+                qSecondary: defaultQ.secondary,
+                qMuted: defaultQ.muted,
+                qFaint: defaultQ.faint,
+                qHairline: defaultQ.hairline,
+                qActiveBg: defaultQ.activeBg
             )
         case .pinkish:
             return ThemePalette(
@@ -84,7 +127,15 @@ struct Theme {
                 pinBg: Color.green.opacity(0.2),
                 calloutBg: Color(red: 0.16, green: 0.19, blue: 0.26),
                 editorText: NSColor.white,
-                preferredColorScheme: .dark
+                preferredColorScheme: .dark,
+                qAccent: defaultQAccent,
+                qRowTitle: defaultQ.rowTitle,
+                qRowTitleActive: defaultQ.rowTitleActive,
+                qSecondary: defaultQ.secondary,
+                qMuted: defaultQ.muted,
+                qFaint: defaultQ.faint,
+                qHairline: defaultQ.hairline,
+                qActiveBg: defaultQ.activeBg
             )
         case .greenish:
             return ThemePalette(
@@ -99,7 +150,43 @@ struct Theme {
                 pinBg: Color.green.opacity(0.2),
                 calloutBg: Color(red: 0.15, green: 0.18, blue: 0.20),
                 editorText: NSColor.white,
-                preferredColorScheme: .dark
+                preferredColorScheme: .dark,
+                qAccent: defaultQAccent,
+                qRowTitle: defaultQ.rowTitle,
+                qRowTitleActive: defaultQ.rowTitleActive,
+                qSecondary: defaultQ.secondary,
+                qMuted: defaultQ.muted,
+                qFaint: defaultQ.faint,
+                qHairline: defaultQ.hairline,
+                qActiveBg: defaultQ.activeBg
+            )
+        case .quiet:
+            // --q-bg-app:#1a1816, --q-bg-sidebar:#161412, --q-bg-active:#23201d,
+            // --q-border-hair:#221f1c, --q-text-primary:#f5efe4, --q-text-secondary:#c8c1b5,
+            // --q-text-tertiary:#a8a194, --q-text-muted:#7a736a, --q-text-faint:#5d574e,
+            // --q-accent:#c89968
+            let accent = Color(red: 0xc8/255, green: 0x99/255, blue: 0x68/255)
+            return ThemePalette(
+                bg: Color(red: 0x1a/255, green: 0x18/255, blue: 0x16/255),
+                sidebarBg: Color(red: 0x16/255, green: 0x14/255, blue: 0x12/255),
+                elementBg: Color(red: 0x23/255, green: 0x20/255, blue: 0x1d/255),
+                selection: accent,
+                text: Color(red: 0xf5/255, green: 0xef/255, blue: 0xe4/255),
+                textMuted: Color(red: 0x5d/255, green: 0x57/255, blue: 0x4e/255),
+                border: Color(red: 0x22/255, green: 0x1f/255, blue: 0x1c/255),
+                pinGold: accent,
+                pinBg: accent.opacity(0.18),
+                calloutBg: Color(red: 0x23/255, green: 0x20/255, blue: 0x1d/255),
+                editorText: NSColor(red: 0xf5/255, green: 0xef/255, blue: 0xe4/255, alpha: 1),
+                preferredColorScheme: .dark,
+                qAccent: accent,
+                qRowTitle: Color(red: 0xa8/255, green: 0xa1/255, blue: 0x94/255),
+                qRowTitleActive: Color(red: 0xf5/255, green: 0xef/255, blue: 0xe4/255),
+                qSecondary: Color(red: 0xc8/255, green: 0xc1/255, blue: 0xb5/255),
+                qMuted: Color(red: 0x7a/255, green: 0x73/255, blue: 0x6a/255),
+                qFaint: Color(red: 0x5d/255, green: 0x57/255, blue: 0x4e/255),
+                qHairline: Color(red: 0x22/255, green: 0x1f/255, blue: 0x1c/255),
+                qActiveBg: Color(red: 0x23/255, green: 0x20/255, blue: 0x1d/255)
             )
         }
     }
@@ -120,4 +207,13 @@ struct Theme {
     static var calloutBg: Color { current.calloutBg }
     static var editorTextNSColor: NSColor { current.editorText }
     static var preferredColorScheme: ColorScheme { current.preferredColorScheme }
+
+    static var qAccent: Color { current.qAccent }
+    static var qRowTitle: Color { current.qRowTitle }
+    static var qRowTitleActive: Color { current.qRowTitleActive }
+    static var qSecondary: Color { current.qSecondary }
+    static var qMuted: Color { current.qMuted }
+    static var qFaint: Color { current.qFaint }
+    static var qHairline: Color { current.qHairline }
+    static var qActiveBg: Color { current.qActiveBg }
 }

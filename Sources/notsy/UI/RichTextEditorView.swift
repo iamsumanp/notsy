@@ -3322,6 +3322,14 @@ struct RichTextEditorView: NSViewRepresentable {
         textView.selectedTextAttributes = [
             .backgroundColor: NSColor.selectedTextBackgroundColor.withAlphaComponent(0.45)
         ]
+        if (NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish) == .quiet {
+            let quietLink = NSColor(calibratedRed: 0xc8/255.0, green: 0x99/255.0, blue: 0x68/255.0, alpha: 1)
+            textView.linkTextAttributes = [
+                .foregroundColor: quietLink,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .cursor: NSCursor.pointingHand
+            ]
+        }
 
         let defaultStyle = NSMutableParagraphStyle()
         defaultStyle.lineSpacing = 4

@@ -16,15 +16,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupPanel()
         setupStatusBarItem()
 
+        applyStickyMode(UserDefaults.standard.bool(forKey: "notsy.panel.sticky.enabled"))
+
         GlobalHotkeyManager.shared.action = { [weak self] in
             DispatchQueue.main.async {
                 self?.toggleWindow()
             }
         }
-        
+
         NotificationCenter.default.addObserver(self, selector: #selector(settingsAction), name: NSNotification.Name("NotsyShowPreferences"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(stickyChanged(_:)), name: NSNotification.Name("NotsyStickyChanged"), object: nil)
 
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    @objc private func stickyChanged(_ notification: Notification) {
+        let sticky = (notification.userInfo?["sticky"] as? Bool) ?? false
+        applyStickyMode(sticky)
+    }
+
+    private func applyStickyMode(_ sticky: Bool) {
+        guard let panel else { return }
+        panel.hidesOnDeactivate = !sticky
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

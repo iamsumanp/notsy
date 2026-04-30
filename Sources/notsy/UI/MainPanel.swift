@@ -85,8 +85,10 @@ struct MainPanel: View {
     @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant
         .bluish.rawValue
     @AppStorage("notsy.sidebar.width") private var sidebarWidth: Double = 300
+    @AppStorage("notsy.sidebar.width.quiet") private var quietSidebarWidthStored: Double = 230
     @AppStorage("notsy.sidebar.collapsed") private var sidebarCollapsed: Bool = false
     @AppStorage("notsy.editor.spellcheck.enabled") private var spellCheckEnabled: Bool = false
+    @AppStorage("notsy.panel.sticky.enabled") private var stickyEnabled: Bool = false
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var sidebarRuntimeWidth: CGFloat = 300
     @State private var sidebarResizeHovering = false
@@ -176,6 +178,103 @@ struct MainPanel: View {
         NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish
     }
 
+    private var isQuietTheme: Bool {
+        selectedThemeVariant == .quiet
+    }
+
+    private var quietSidebarMinWidth: CGFloat { 180 }
+    private var quietSidebarMaxWidth: CGFloat { 460 }
+    private var clampedQuietSidebarWidth: CGFloat {
+        max(quietSidebarMinWidth, min(quietSidebarMaxWidth, CGFloat(quietSidebarWidthStored)))
+    }
+
+    @ViewBuilder
+    private var bottomStatusBar: some View {
+        HStack {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12))
+                Text("Notsy")
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10))
+                Text("Application Support/Notsy")
+                    .truncationMode(.middle)
+                    .lineLimit(1)
+            }
+            .foregroundColor(Theme.textMuted)
+            .font(.system(size: 12, weight: .medium))
+            .padding(.leading, 8)
+
+            if !isQuietTheme {
+                Button(action: {
+                    showClearUnpinnedConfirmation = true
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash")
+                        Text("Clear Unpinned")
+                    }
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.elementBg)
+                    .foregroundColor(Theme.textMuted)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                .pointingHandCursor()
+                .padding(.leading, 8)
+            }
+
+            stickyToggleButton
+
+            Spacer()
+
+            Text("\(filteredNotes.count) results found")
+                .font(.system(size: 12))
+                .foregroundColor(Theme.textMuted)
+
+            if let selectedNoteID,
+                let note = store.notes.first(where: { $0.id == selectedNoteID })
+            {
+                Divider()
+                    .frame(height: 12)
+                    .background(Theme.border)
+                    .padding(.horizontal, 10)
+                Text(
+                    "Created \(metaTimeString(from: note.createdAt)) • \(note.plainTextCache.split(separator: " ").count) words"
+                )
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(Theme.textMuted)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(isQuietTheme ? Theme.bg : Theme.sidebarBg)
+        .foregroundColor(isQuietTheme ? Theme.qFaint : Theme.textMuted)
+    }
+
+    private func toggleStickyMode() {
+        stickyEnabled.toggle()
+        NotificationCenter.default.post(
+            name: NSNotification.Name("NotsyStickyChanged"),
+            object: nil,
+            userInfo: ["sticky": stickyEnabled]
+        )
+    }
+
+    @ViewBuilder
+    private var stickyToggleButton: some View {
+        Button(action: toggleStickyMode) {
+            Image(systemName: stickyEnabled ? "pin.fill" : "pin")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(stickyEnabled ? Theme.selection : Theme.textMuted)
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(PointerPlainButtonStyle())
+        .help("Sticky panel (⌘T)")
+        .padding(.leading, 6)
+    }
+
     private var mostRecentlyModifiedNoteID: UUID? {
         store.notes.max(by: { $0.updatedAt < $1.updatedAt })?.id
     }
@@ -211,8 +310,8 @@ struct MainPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // TOP BIG SEARCH BAR
-            if !zenModeEnabled {
+            // TOP BIG SEARCH BAR (hidden in Quiet — search lives in the sidebar header)
+            if !zenModeEnabled && !isQuietTheme {
                 HStack {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: isSearchCompact ? 14 : 18))
@@ -273,6 +372,7 @@ struct MainPanel: View {
             HStack(spacing: 0) {
                 // LEFT PANEL (SIDEBAR)
                 if sidebarIsVisible {
+                    let sidebarColumnWidth = isQuietTheme ? clampedQuietSidebarWidth : clampedSidebarWidth
                     ZStack(alignment: .topTrailing) {
                         SidebarView(
                             queryBuffer: $queryBuffer,
@@ -282,32 +382,34 @@ struct MainPanel: View {
                             focus: _focus,
                             createNewNote: { createNewNote(fromQuery: true) }
                         )
-                        .frame(width: clampedSidebarWidth)
+                        .frame(width: sidebarColumnWidth)
                         .background(Theme.sidebarBg)
 
-                        HStack(spacing: 6) {
-                            Text("Cmd+/")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundColor(Theme.textMuted.opacity(0.8))
-                            Button(action: {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    sidebarCollapsed = true
+                        if !isQuietTheme {
+                            HStack(spacing: 6) {
+                                Text("Cmd+/")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(Theme.textMuted.opacity(0.8))
+                                Button(action: {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        sidebarCollapsed = true
+                                    }
+                                }) {
+                                    Image(systemName: "sidebar.left")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(Theme.textMuted)
+                                        .frame(width: 24, height: 24)
                                 }
-                            }) {
-                                Image(systemName: "sidebar.left")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(Theme.textMuted)
-                                    .frame(width: 24, height: 24)
+                                .buttonStyle(PointerPlainButtonStyle())
                             }
-                            .buttonStyle(PointerPlainButtonStyle())
+                            .padding(.top, 8)
+                            .padding(.trailing, 8)
                         }
-                        .padding(.top, 8)
-                        .padding(.trailing, 8)
                     }
-                    .frame(width: clampedSidebarWidth)
+                    .frame(width: sidebarColumnWidth)
 
                     Rectangle()
-                        .fill(Theme.border)
+                        .fill(isQuietTheme ? Theme.qHairline : Theme.border)
                         .frame(width: 1)
                         .overlay {
                             Color.clear
@@ -316,18 +418,34 @@ struct MainPanel: View {
                                 .gesture(
                                     DragGesture(minimumDistance: 0)
                                         .onChanged { value in
-                                            if sidebarDragStartWidth == nil {
-                                                sidebarDragStartWidth = clampedSidebarWidth
+                                            if isQuietTheme {
+                                                if sidebarDragStartWidth == nil {
+                                                    sidebarDragStartWidth = clampedQuietSidebarWidth
+                                                }
+                                                let base = sidebarDragStartWidth ?? clampedQuietSidebarWidth
+                                                let proposed = base + value.translation.width
+                                                quietSidebarWidthStored = Double(max(
+                                                    quietSidebarMinWidth,
+                                                    min(quietSidebarMaxWidth, proposed)
+                                                ))
+                                            } else {
+                                                if sidebarDragStartWidth == nil {
+                                                    sidebarDragStartWidth = clampedSidebarWidth
+                                                }
+                                                let base = sidebarDragStartWidth ?? clampedSidebarWidth
+                                                let proposed = base + value.translation.width
+                                                sidebarRuntimeWidth = max(
+                                                    sidebarMinWidth,
+                                                    min(sidebarMaxWidth, proposed)
+                                                )
                                             }
-                                            let base = sidebarDragStartWidth ?? clampedSidebarWidth
-                                            let proposed = base + value.translation.width
-                                            sidebarRuntimeWidth = max(
-                                                sidebarMinWidth,
-                                                min(sidebarMaxWidth, proposed)
-                                            )
                                         }
                                         .onEnded { _ in
-                                            sidebarWidth = Double(clampedSidebarWidth)
+                                            if isQuietTheme {
+                                                quietSidebarWidthStored = Double(clampedQuietSidebarWidth)
+                                            } else {
+                                                sidebarWidth = Double(clampedSidebarWidth)
+                                            }
                                             sidebarDragStartWidth = nil
                                         }
                                 )
@@ -479,69 +597,13 @@ struct MainPanel: View {
 
             if !zenModeEnabled {
                 Divider().background(Theme.border)
-
-                // BOTTOM BAR
-                HStack {
-                    HStack(spacing: 6) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 12))
-                        Text("Notsy")
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10))
-                        Text("Application Support/Notsy")
-                            .truncationMode(.middle)
-                            .lineLimit(1)
-                    }
-                    .foregroundColor(Theme.textMuted)
-                    .font(.system(size: 12, weight: .medium))
-                    .padding(.leading, 8)
-
-                    Button(action: {
-                        showClearUnpinnedConfirmation = true
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "trash")
-                            Text("Clear Unpinned")
-                        }
-                        .font(.system(size: 12))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Theme.elementBg)
-                        .foregroundColor(Theme.textMuted)
-                        .cornerRadius(4)
-                    }
-                    .buttonStyle(.plain)
-                    .pointingHandCursor()
-                    .padding(.leading, 8)
-
-                    Spacer()
-
-                    Text("\(filteredNotes.count) results found")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.textMuted)
-
-                    if let selectedNoteID,
-                        let note = store.notes.first(where: { $0.id == selectedNoteID })
-                    {
-                        Divider()
-                            .frame(height: 12)
-                            .background(Theme.border)
-                            .padding(.horizontal, 10)
-                        Text(
-                            "Created \(metaTimeString(from: note.createdAt)) • \(note.plainTextCache.split(separator: " ").count) words"
-                        )
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Theme.textMuted)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Theme.sidebarBg)
+                bottomStatusBar
             }
         }
         .frame(width: 950, height: 650)
         .background(Theme.sidebarBg)
         .edgesIgnoringSafeArea(.all)
+        .animation(.easeInOut(duration: 0.12), value: themeVariantRaw)
         .preferredColorScheme(Theme.palette(for: selectedThemeVariant).preferredColorScheme)
         .overlay {
             if let previewImage {
@@ -943,6 +1005,16 @@ struct MainPanel: View {
         if event.modifierFlags.contains(.command) && event.keyCode == 37 {
             exitZenMode()
             focus = .search
+            return nil
+        }
+        // Cmd + T -> toggle sticky panel
+        if event.modifierFlags.contains(.command),
+            !event.modifierFlags.contains(.shift),
+            !event.modifierFlags.contains(.option),
+            !event.modifierFlags.contains(.control),
+            event.keyCode == 17
+        {
+            toggleStickyMode()
             return nil
         }
         if event.keyCode == 53 {
@@ -2182,7 +2254,21 @@ struct SidebarView: View {
         var older: [Note] = []
     }
 
+    @AppStorage(Theme.themeDefaultsKey) private var themeVariantRaw: String = NotsyThemeVariant.bluish.rawValue
+    private var isQuietTheme: Bool {
+        (NotsyThemeVariant(rawValue: themeVariantRaw) ?? .bluish) == .quiet
+    }
+
     var body: some View {
+        if isQuietTheme {
+            quietBody
+        } else {
+            defaultBody
+        }
+    }
+
+    @ViewBuilder
+    private var defaultBody: some View {
         let pinned = filteredNotes.filter { $0.pinned }
         let recent = filteredNotes.filter { !$0.pinned }
         let topHitID =
@@ -2728,6 +2814,185 @@ struct SidebarView: View {
                 proxy.scrollTo(selectedNoteID, anchor: .center)
             }
         }
+    }
+
+    // MARK: - Quiet theme
+
+    @ViewBuilder
+    private var quietBody: some View {
+        let pinned = filteredNotes.filter { $0.pinned }
+        let recent = filteredNotes.filter { !$0.pinned }
+        let qb = quietBuckets(from: recent)
+
+        VStack(spacing: 0) {
+            quietHeader
+            Rectangle()
+                .fill(Theme.qHairline)
+                .frame(height: 1)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if !pinned.isEmpty {
+                            quietSection(title: "Pinned", notes: pinned)
+                        }
+                        if !qb.thisWeek.isEmpty {
+                            quietSection(title: "This week", notes: qb.thisWeek)
+                        }
+                        if !qb.older.isEmpty {
+                            quietSection(title: "Older", notes: qb.older)
+                        }
+                    }
+                    .padding(.bottom, 16)
+                }
+                .onAppear { scrollSelectionIntoView(using: proxy, animated: false) }
+                .onChange(of: selectedNoteID) { _, _ in
+                    scrollSelectionIntoView(using: proxy, animated: false)
+                }
+            }
+            .focused($focus, equals: .list)
+        }
+    }
+
+    @ViewBuilder
+    private var quietHeader: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(Theme.qAccent)
+                .frame(width: 7, height: 7)
+
+            ZStack(alignment: .leading) {
+                if queryBuffer.isEmpty && focus != .search {
+                    Text("Notsy")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(Theme.qSecondary)
+                        .allowsHitTesting(false)
+                }
+                TextField("", text: $queryBuffer)
+                    .font(.system(size: 13, weight: .regular))
+                    .textFieldStyle(.plain)
+                    .foregroundColor(Theme.text)
+                    .focused($focus, equals: .search)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: createNewNote) {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(Theme.qMuted)
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .pointingHandCursor()
+            .help("New note")
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 16)
+        .padding(.top, 18)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder
+    private func quietSection(title: String, notes: [Note]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title.uppercased())
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(1.6)
+                .foregroundColor(Theme.qFaint)
+                .padding(.leading, 18)
+                .padding(.trailing, 18)
+                .padding(.bottom, 6)
+
+            ForEach(notes) { note in
+                quietNoteRow(note: note)
+            }
+        }
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private func quietNoteRow(note: Note) -> some View {
+        let isSelected = selectedNoteID == note.id
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(note.title.isEmpty ? "Untitled" : note.title)
+                .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                .foregroundColor(isSelected ? Theme.qRowTitleActive : Theme.qRowTitle)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 8)
+
+            Text(quietDateString(from: note.updatedAt))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(Theme.qFaint)
+                .fixedSize()
+        }
+        .padding(.leading, isSelected ? 16 : 18)
+        .padding(.trailing, 18)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? Theme.qActiveBg : Color.clear)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Theme.qAccent)
+                .frame(width: 2)
+                .opacity(isSelected ? 1 : 0)
+        }
+        .contentShape(Rectangle())
+        .id(note.id)
+        .onTapGesture {
+            selectedNoteID = note.id
+            focus = .editor
+        }
+        .contextMenu {
+            Button(action: { withAnimation(.spring()) { store.togglePin(for: note) } }) {
+                Text(note.pinned ? "Unpin" : "Pin")
+                Image(systemName: note.pinned ? "pin.slash" : "pin")
+            }
+            Button(action: {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(note.plainTextCache, forType: .string)
+            }) {
+                Text("Copy Content")
+                Image(systemName: "doc.on.doc")
+            }
+            Divider()
+            Button(role: .destructive, action: {
+                withAnimation { deleteNote(note) }
+            }) {
+                Text("Delete")
+                Image(systemName: "trash")
+            }
+        }
+        .animation(.easeInOut(duration: 0.12), value: isSelected)
+    }
+
+    private struct QuietBuckets {
+        var thisWeek: [Note] = []
+        var older: [Note] = []
+    }
+
+    private func quietBuckets(from notes: [Note]) -> QuietBuckets {
+        var b = QuietBuckets()
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        for note in notes.sorted(by: { $0.updatedAt > $1.updatedAt }) {
+            let day = calendar.startOfDay(for: note.updatedAt)
+            if let daysAgo = calendar.dateComponents([.day], from: day, to: startOfToday).day,
+               daysAgo <= 7 {
+                b.thisWeek.append(note)
+            } else {
+                b.older.append(note)
+            }
+        }
+        return b
+    }
+
+    private func quietDateString(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
     }
 }
 struct RichTextEditorWrapper: View {
